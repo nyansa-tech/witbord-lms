@@ -1,0 +1,1254 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2013 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+# @API Outcome Results
+#
+# API for accessing learning outcome results
+#
+# @model OutcomeResult
+#     {
+#       "id": "OutcomeResult",
+#       "description": "A student's result for an outcome",
+#       "properties": {
+#         "id": {
+#           "example": "42",
+#           "type": "integer",
+#           "description": "A unique identifier for this result"
+#         },
+#         "score": {
+#           "example": 6,
+#           "type": "integer",
+#           "description": "The student's score"
+#         },
+#         "submitted_or_assessed_at": {
+#           "example": "2013-02-01T00:00:00-06:00",
+#           "type": "datetime",
+#           "description": "The datetime the resulting OutcomeResult was submitted at, or absent that, when it was assessed."
+#         },
+#         "links": {
+#           "example": {"user": "3", "learning_outcome": "97", "alignment": "53"},
+#           "type": "object",
+#           "description": "Unique identifiers of objects associated with this result"
+#         },
+#         "percent": {
+#           "example": "0.65",
+#           "type": "number",
+#           "description": "score's percent of maximum points possible for outcome, scaled to reflect any custom mastery levels that differ from the learning outcome"
+#         }
+#       }
+#     }
+#
+# @model OutcomeRollupScoreLinks
+#     {
+#       "id": "OutcomeRollupScoreLinks",
+#       "description": "",
+#       "properties": {
+#         "outcome": {
+#           "description": "The id of the related outcome",
+#           "example": 42,
+#           "type": "integer"
+#         }
+#       }
+#     }
+#
+# @model OutcomeRollupScore
+#     {
+#       "id": "OutcomeRollupScore",
+#       "description": "",
+#       "properties": {
+#         "score": {
+#           "description": "The rollup score for the outcome, based on the student alignment scores related to the outcome. This could be null if the student has no related scores.",
+#           "example": 3,
+#           "type": "integer"
+#         },
+#         "count": {
+#           "example": 6,
+#           "type": "integer",
+#           "description": "The number of alignment scores included in this rollup."
+#         },
+#         "links": {
+#           "example": {"outcome": "42"},
+#           "$ref": "OutcomeRollupScoreLinks"
+#         }
+#       }
+#     }
+#
+# @model OutcomeRollupLinks
+#     {
+#       "id": "OutcomeRollupLinks",
+#       "description": "",
+#       "properties": {
+#         "course": {
+#           "description": "If an aggregate result was requested, the course field will be present. Otherwise, the user and section field will be present (Optional) The id of the course that this rollup applies to",
+#           "example": 42,
+#           "type": "integer"
+#         },
+#         "user": {
+#           "description": "(Optional) The id of the user that this rollup applies to",
+#           "example": 42,
+#           "type": "integer"
+#         },
+#         "section": {
+#           "description": "(Optional) The id of the section the user is in",
+#           "example": 57,
+#           "type": "integer"
+#         }
+#       }
+#     }
+#
+# @model OutcomeRollup
+#     {
+#       "id": "OutcomeRollup",
+#       "description": "",
+#       "properties": {
+#         "scores": {
+#           "description": "an array of OutcomeRollupScore objects",
+#           "$ref": "OutcomeRollupScore"
+#         },
+#         "name": {
+#           "description": "The name of the resource for this rollup. For example, the user name.",
+#           "example": "John Doe",
+#           "type": "string"
+#         },
+#         "links": {
+#           "example": {"course": 42, "user": 42, "section": 57},
+#           "$ref": "OutcomeRollupLinks"
+#         }
+#       }
+#     }
+#
+# @model OutcomeAlignment
+#     {
+#       "id": "OutcomeAlignment",
+#       "description": "An asset aligned with this outcome",
+#       "properties": {
+#         "id": {
+#           "description": "A unique identifier for this alignment",
+#           "example": "quiz_3",
+#           "type": "string"
+#         },
+#         "name": {
+#           "description": "The name of this alignment",
+#           "example": "Big mid-term test",
+#           "type": "string"
+#         },
+#         "html_url": {
+#           "description": "(Optional) A URL for details about this alignment",
+#           "type": "string"
+#         }
+#       }
+#     }
+#
+# @model OutcomePath
+#     {
+#       "id": "OutcomePath",
+#       "description": "The full path to an outcome",
+#       "properties": {
+#         "id": {
+#           "example": "42",
+#           "type": "integer",
+#           "description": "A unique identifier for this outcome"
+#         },
+#         "parts": {
+#           "description": "an array of OutcomePathPart objects",
+#           "$ref": "OutcomePathPart"
+#         }
+#       }
+#     }
+#
+# @model OutcomePathPart
+#     {
+#       "id": "OutcomePathPart",
+#       "description": "An outcome or outcome group",
+#       "properties": {
+#         "name": {
+#           "example": "Spelling out numbers",
+#           "type": "string",
+#           "description": "The title of the outcome or outcome group"
+#         }
+#       }
+#     }
+
+class OutcomeResultsController < ApplicationController
+  CACHE_EXPIRATION = 5.minutes
+  include Api::V1::OutcomeResults
+  include Outcomes::Enrollments
+  include Outcomes::ResultAnalytics
+  include CanvasOutcomesHelper
+  include AlignmentsHelper
+
+  before_action :require_context
+  before_action :require_outcome_context
+  before_action :verify_aggregate_parameter, only: :rollups
+  before_action :verify_aggregate_stat_parameter, only: :rollups
+  before_action :verify_sort_parameters, only: :rollups
+  before_action :verify_include_parameter
+  before_action :require_outcomes
+  before_action :require_users
+
+  # @API Get outcome results
+  #
+  # Gets the outcome results for users and outcomes in the specified context.
+  #
+  # @argument user_ids[] [Integer]
+  #   If specified, only the users whose ids are given will be included in the
+  #   results. SIS ids can be used, prefixed by "sis_user_id:".
+  #   It is an error to specify an id for a user who is not a student in
+  #   the context.
+  #
+  # @argument outcome_ids[] [Integer]
+  #   If specified, only the outcomes whose ids are given will be included in the
+  #   results. it is an error to specify an id for an outcome which is not linked
+  #   to the context.
+  #
+  # @argument include[] [String, "alignments"|"outcomes"|"outcomes.alignments"|"outcome_groups"|"outcome_links"|"outcome_paths"|"users"]
+  #   Specify additional collections to be side loaded with the result.
+  #   "alignments" includes only the alignments referenced by the returned
+  #   results.
+  #   "outcomes.alignments" includes all alignments referenced by outcomes in the
+  #   context.
+  #
+  # @argument include_hidden [Boolean]
+  #   If true, results that are hidden from the learning mastery gradebook and student rollup
+  #   scores will be included
+  #
+  # @example_response
+  #    {
+  #      outcome_results: [OutcomeResult]
+  #    }
+  # used in sLMGB
+  def index
+    include_hidden_value = value_to_boolean(params[:include_hidden])
+    @results, @outcome_service_results = find_canvas_os_results(include_hidden: include_hidden_value)
+
+    json = nil
+    if @outcome_service_results.nil?
+      @results = Api.paginate(@results, self, api_v1_course_outcome_results_url)
+      json = outcome_results_json(@results)
+    else
+      @outcome_service_results.push(@results).flatten!
+      @outcome_service_results.select! { |outcome| params[:outcome_ids].include? outcome.learning_outcome_id.to_s } if params[:outcome_ids].present?
+      @outcome_service_results = Api.paginate(@outcome_service_results, self, api_v1_course_outcome_results_url)
+      json = outcome_results_json(@outcome_service_results)
+    end
+    json[:linked] = linked_include_collections if params[:include].present?
+    render json:
+  end
+
+  # @API Set outcome ordering for LMGB
+  #
+  # Saves the ordering of outcomes in LMGB for a user
+  def outcome_order
+    outcome_position_map = JSON.parse(request.body.read)
+
+    # Validate outcomes belong to this course
+    course_outcome_ids = @outcomes.pluck(:id).to_set
+    outcome_position_map.each do |outcome|
+      reject! "Outcomes do not belong to Course" unless course_outcome_ids.include?(outcome["outcome_id"])
+    end
+
+    # Associate user with shard if they are not already
+    @current_user.associate_with_shard(@context.shard, :shadow) unless @current_user.associated_shards.include?(@context.shard)
+
+    # Save Lmgb Outcome Ordering
+    UserLmgbOutcomeOrderings.set_lmgb_outcome_ordering(@context.root_account_id, @current_user.id, @context.id, outcome_position_map)
+  end
+
+  # @API Get outcome result rollups
+  #
+  # Gets the outcome rollups for the users and outcomes in the specified
+  # context.
+  #
+  # @argument aggregate [String, "course"]
+  #   If specified, instead of returning one rollup for each user, all the user
+  #   rollups will be combined into one rollup for the course that will contain
+  #   the average (or median, see below) rollup score for each outcome.
+  #
+  # @argument aggregate_stat [String, "mean"|"median"]
+  #   If aggregate rollups requested, then this value determines what
+  #   statistic is used for the aggregate. Defaults to "mean" if this value
+  #   is not specified.
+  #
+  # @argument user_ids[] [Integer]
+  #   If specified, only the users whose ids are given will be included in the
+  #   results or used in an aggregate result. it is an error to specify an id
+  #   for a user who is not a student in the context
+  #
+  # @argument outcome_ids[] [Integer]
+  #   If specified, only the outcomes whose ids are given will be included in the
+  #   results. it is an error to specify an id for an outcome which is not linked
+  #   to the context.
+  #
+  # @argument include[] [String, "courses"|"outcomes"|"outcomes.alignments"|"outcome_groups"|"outcome_links"|"outcome_paths"|"users"]
+  #   Specify additional collections to be side loaded with the result.
+  #
+  # @argument exclude[] [String, "missing_user_rollups"|"missing_outcome_results"|"]
+  #   Specify additional values to exclude.
+  #   "missing_user_rollups" excludes rollups for users without results.
+  #   "missing_outcome_results" excludes outcomes without results.
+  #
+  # @argument sort_by [String, "student"|"outcome"]
+  #   If specified, sorts outcome result rollups. "student" sorting will sort
+  #   by a user's sortable name. "outcome" sorting will sort by the given outcome's
+  #   rollup score. The latter requires specifying the "sort_outcome_id" parameter.
+  #   By default, the sort order is ascending.
+  #
+  # @argument sort_outcome_id [Integer]
+  #   If outcome sorting requested, then this determines which outcome to use
+  #   for rollup score sorting.
+  #
+  # @argument sort_order [String, "asc", "desc"]
+  #   If sorting requested, then this allows changing the default sort order of
+  #   ascending to descending.
+  #
+  # @argument add_defaults [Boolean]
+  #   If defaults are requested, then color and mastery level defaults will be
+  #   added to outcome ratings in the rollup. This will only take effect if
+  #   the Account Level Mastery Scales FF is DISABLED
+  #
+  # @argument contributing_scores [Boolean]
+  #   **DEPRECATED**: This parameter is deprecated. Use the separate
+  #   GET /api/v1/courses/:course_id/outcomes/:outcome_id/contributing_scores
+  #   endpoint instead to fetch contributing scores for a specific outcome.
+  #   If contributing scores are requested, then each individual outcome score will
+  #   also include all graded artifacts that contributed to the outcome score
+  #
+  # @example_response
+  #    {
+  #      "rollups": [OutcomeRollup],
+  #      "linked": {
+  #        // (Optional) Included if include[] has outcomes
+  #        "outcomes": [Outcome],
+  #
+  #        // (Optional) Included if aggregate is not set and include[] has users
+  #        "users": [User],
+  #
+  #        // (Optional) Included if aggregate is 'course' and include[] has courses
+  #        "courses": [Course]
+  #
+  #        // (Optional) Included if include[] has outcome_groups
+  #        "outcome_groups": [OutcomeGroup],
+  #
+  #        // (Optional) Included if include[] has outcome_links
+  #        "outcome_links": [OutcomeLink]
+  #
+  #        // (Optional) Included if include[] has outcome_paths
+  #        "outcome_paths": [OutcomePath]
+  #
+  #        // (Optional) Included if include[] has outcomes.alignments
+  #        "outcomes.alignments": [OutcomeAlignment]
+  #      }
+  #    }
+  def rollups
+    respond_to do |format|
+      format.json do
+        json = case params[:aggregate]
+               when "course" then aggregate_rollups_json
+               else
+                 ff_read_enabled = Account.site_admin.feature_enabled?(:outcomes_rollup_read)
+                 metric_tags = { outcomes_rollup_read: ff_read_enabled ? "on" : "off" }
+
+                 InstStatsd::Statsd.time("lmgb.rollup.endpoint.runtime", tags: metric_tags) do
+                   user_rollups_json
+                 end
+               end
+        json[:linked] = linked_include_collections if params[:include].present?
+        render json: json if json
+      end
+      format.csv do
+        ff_read_enabled = Account.site_admin.feature_enabled?(:outcomes_rollup_read)
+        metric_tags = { outcomes_rollup_read: ff_read_enabled ? "on" : "off" }
+
+        InstStatsd::Statsd.time("lmgb.rollup.endpoint.runtime", tags: metric_tags) do
+          build_outcome_paths
+          send_data(
+            outcome_results_rollups_csv(@current_user, @context, user_rollups, @outcomes, @outcome_paths),
+            type: "text/csv",
+            filename: t("outcomes_filename", "Outcomes").tr(" ", "_") + "-" + @context.name.to_s.tr(" ", "_") + ".csv",
+            disposition: "attachment"
+          )
+        end
+      end
+    end
+  end
+
+  # @API Get contributing scores
+  #
+  # Gets the contributing scores for a specific outcome and set of users.
+  # Contributing scores are the individual assignment/quiz scores that
+  # contributed to the outcome score for each user.
+  #
+  # Returns all alignments for the outcome in the course context.
+  #
+  # @argument user_ids[] [Integer]
+  #   If specified, only the users whose ids are given will be included in the
+  #   results. It is an error to specify an id for a user who is not a student in
+  #   the context.
+  # @argument only_assignment_alignments [Boolean]
+  #   If specified, only assignment alignments will be included in the results.
+  # @argument show_unpublished_assignments [Boolean]
+  #   If true, unpublished assignments will be included in the results. Defaults to false.
+  #
+  # @example_response
+  #    {
+  #      "outcome": {
+  #        "id": "1",
+  #        "title": "Outcome 1"
+  #      },
+  #      "alignments": [
+  #        {
+  #          "alignment_id": "123",
+  #          "associated_asset_id": "456",
+  #          "associated_asset_name": "Assignment 1",
+  #          "associated_asset_type": "Assignment"
+  #        }
+  #      ],
+  #      "scores": [
+  #        {
+  #          "user_id": "1",
+  #          "alignment_id": "123",
+  #          "score": 3.5
+  #        }
+  #      ]
+  #    }
+  def contributing_scores
+    unless @context.grants_any_right?(@current_user, :manage_grades, :view_all_grades)
+      reject! "insufficient permissions", :forbidden
+    end
+
+    @outcome = @outcomes.first
+    reject! "outcome not found" unless @outcome
+
+    alignments = find_all_outcome_alignments(@outcome, @context)
+    only_assignment_alignments = value_to_boolean(params[:only_assignment_alignments])
+    show_unpublished_assignments = value_to_boolean(params[:show_unpublished_assignments])
+
+    unless show_unpublished_assignments
+      alignments = alignments.reject do |alignment|
+        content = alignment.content_tag.content
+        content.is_a?(Assignment) && content.unpublished?
+      end
+    end
+
+    canvas_results, os_results = find_canvas_os_results(all_users: false)
+
+    canvas_results = canvas_results.preload(:user, :learning_outcome, alignment: :content)
+    all_results = canvas_results.to_a + (os_results || [])
+
+    render json: contributing_scores_json(@outcome, alignments, all_results, only_assignment_alignments:)
+  end
+
+  # @API Get mastery distribution
+  #
+  # Returns the distribution of student scores across mastery levels for all outcomes.
+  # This endpoint fetches data for ALL students (not paginated) to provide accurate
+  # distribution statistics for charts and analytics.
+  #
+  # @argument exclude[] [String]
+  #   Optionally restrict which results are included:
+  #   - "missing_user_rollups": exclude students without any scores
+  #   - "missing_outcome_results": exclude outcomes without any results
+  #
+  # @argument outcome_ids[] [String]
+  #   Optionally restrict to specific outcome IDs
+  #
+  # @argument student_ids[] [String]
+  #   Optionally restrict to specific student IDs. If not provided, all students will be included.
+  #
+  # @argument include[] [String]
+  #   Optionally include additional data:
+  #   - "alignment_distributions": include contributing score distributions for alignments
+  #
+  # @argument only_assignment_alignments [Boolean]
+  #   If true and alignment_distributions is included, only include assignment alignments. Default: false.
+  #
+  # @argument show_unpublished_assignments [Boolean]
+  #   If true, include unpublished assignments in alignment distributions. Default: false.
+  #
+  # @argument add_defaults [Boolean]
+  #   If defaults are requested, then color and mastery level defaults will be
+  #   added to outcome ratings in the result. This will only take effect if
+  #   the Account Level Mastery Scales FF is DISABLED
+  #
+  # @returns MasteryDistributionResponse
+  #
+  # @example_response
+  #   {
+  #     "outcome_distributions": {
+  #       "1": {
+  #         "outcome_id": "1",
+  #         "ratings": [
+  #           {
+  #             "description": "Exceeds Mastery",
+  #             "points": 4.0,
+  #             "color": "#127A1B",
+  #             "count": 5,
+  #             "student_ids": ["1", "3", "7", "12", "15"]
+  #           },
+  #           {
+  #             "description": "Mastery",
+  #             "points": 3.0,
+  #             "color": "#0B874B",
+  #             "count": 12,
+  #             "student_ids": ["2", "4", "5", ...]
+  #           }
+  #         ],
+  #         "total_students": 28,
+  #         "alignment_distributions": {
+  #           "content_tag_123": {
+  #             "alignment_id": "content_tag_123",
+  #             "ratings": [
+  #               {
+  #                 "description": "Exceeds Mastery",
+  #                 "points": 4.0,
+  #                 "color": "#127A1B",
+  #                 "count": 3,
+  #                 "student_ids": ["1", "7", "12"]
+  #               }
+  #             ],
+  #             "total_students": 28
+  #           }
+  #         }
+  #       }
+  #     },
+  #     "students": [
+  #       {
+  #         "id": "1",
+  #         "name": "Student Name",
+  #         "sortable_name": "Name, Student"
+  #       }
+  #     ]
+  #   }
+  def mastery_distribution
+    unless @context.grants_any_right?(@current_user, :manage_grades, :view_all_grades)
+      reject! "insufficient permissions", :forbidden
+    end
+
+    rollups = user_rollups(all_users: true)
+
+    # Filter by specific student IDs if provided
+    if params[:student_ids].present?
+      student_ids = Api.value_to_array(params[:student_ids]).map(&:to_i)
+      @all_users = @all_users.select { |u| student_ids.include?(u.id) }
+      rollups = rollups.select { |r| student_ids.include?(r.context.id) }
+    end
+
+    outcome_distributions = mastery_distributions(rollups:, outcomes: @outcomes, context: @context, opts: { add_defaults: params[:add_defaults] })
+
+    # Optionally include alignment distributions nested within each outcome (via include[] parameter)
+    includes = Api.value_to_array(params[:include]).uniq
+    if includes.include?("alignment_distributions")
+      only_assignment_alignments = value_to_boolean(params[:only_assignment_alignments])
+      show_unpublished_assignments = value_to_boolean(params[:show_unpublished_assignments])
+
+      # Gather alignments for all outcomes
+      alignments_by_outcome = {}
+      @outcomes.each do |outcome|
+        alignments = find_all_outcome_alignments(outcome, @context)
+
+        # Filter to only assignment alignments if requested
+        if only_assignment_alignments
+          alignments = alignments.select { |a| a.content_type == "Assignment" }
+        end
+
+        # Filter out unpublished assignments if requested
+        unless show_unpublished_assignments
+          alignments = alignments.reject do |alignment|
+            content = alignment.content_tag.content
+            content.is_a?(Assignment) && content.unpublished?
+          end
+        end
+
+        alignments_by_outcome[outcome.id] = alignments unless alignments.empty?
+      end
+
+      # Fetch all results for alignment calculations
+      canvas_results, os_results = find_canvas_os_results(all_users: true)
+      canvas_results = canvas_results.preload(:user, :learning_outcome, alignment: :content)
+      all_results = canvas_results.to_a + (os_results || [])
+
+      # Calculate alignment distributions using shared ResultAnalytics module
+      alignment_distributions = alignment_mastery_distributions(
+        outcomes: @outcomes,
+        users: @all_users,
+        context: @context,
+        results: all_results,
+        alignments_by_outcome:
+      )
+
+      # Merge alignment distributions into their respective outcome distributions
+      alignment_distributions.each do |outcome_id, alignments|
+        if outcome_distributions[outcome_id]
+          outcome_distributions[outcome_id][:alignment_distributions] = alignments
+        end
+      end
+    end
+
+    # Build response
+    response_json = {
+      outcome_distributions:,
+      students: outcome_results_linked_users_json(@all_users, @context)
+    }
+
+    render json: response_json
+  end
+
+  # @API Enqueue a delayed Outcome Rollup Calculation Job
+  #
+  # @argument course_id [String] The course ID for the rollup job
+  # @argument student_uuid [String] The student UUID for the rollup job. If provided, calculates for specific student.
+  #
+  # @returns RollupJob
+  def enqueue_outcome_rollup_calculation
+    unless Account.site_admin.feature_enabled?(:outcomes_rollup_propagation)
+      head :no_content
+      return
+    end
+
+    course_id = params[:course_id]
+    student_uuid = params[:student_uuid]
+
+    begin
+      if course_id.present? && student_uuid.present?
+        course = Course.find(course_id)
+        student = course.students.find_by(uuid: student_uuid) if student_uuid
+        raise ActiveRecord::RecordNotFound unless student
+
+        Outcomes::StudentOutcomeRollupCalculationService.calculate_for_student(
+          course_id:,
+          student_id: student.id
+        )
+        render json: { message: "Rollup calculation enqueued for student #{student.id} in course #{course_id}", type: "student" }
+      else
+        render json: { error: "course id and student uuid are required" }, status: :bad_request
+      end
+    rescue ActiveRecord::RecordNotFound
+      render json: { error: "Invalid course or student" }, status: :not_found
+    rescue => e
+      render json: { error: e.message }, status: :unprocessable_content
+    end
+  end
+
+  private
+
+  def find_new_quiz_assignments
+    # check if the logged in user has manage_grades & view_all_grades permissions
+    # if not, apply exclude_muted_associations to the assignment query
+    @new_quiz_assignments =
+      if context.grants_any_right?(@current_user, :manage_grades, :view_all_grades)
+        Assignment.active.where(context:).quiz_lti
+      else
+        # return if there is more than one user in users as this would indicate
+        # user with insufficient permissions accessing the LMGB
+        return if @users.length > 1
+
+        Assignment.active.where(context:).quiz_lti.exclude_muted_associations_for_user(@users[0])
+      end
+  end
+
+  def fetch_and_handle_os_results_for_all_users(opts)
+    os_results_json = find_outcomes_service_outcome_results(
+      users: @all_users,
+      context: @context,
+      outcomes: @outcomes,
+      assignments: @new_quiz_assignments,
+      **opts
+    )
+    return if os_results_json.nil?
+
+    handle_outcomes_service_results(os_results_json, @context, @outcomes, @all_users, @new_quiz_assignments)
+  end
+
+  def fetch_and_convert_os_results(opts)
+    # Returns a list of new quiz assignments for the current context
+    # If it is empty then no need to continue
+    return if find_new_quiz_assignments.empty?
+
+    # fetches and converts OS results json to LearningOutcomeResult objects then removes duplicate rubric results, if found.
+    results = Rails.cache.fetch(generate_cache_results_key, expires_in: CACHE_EXPIRATION) do
+      fetch_and_handle_os_results_for_all_users(opts)
+    end
+
+    # Remove users that are filtered out since we are pulling all results from OS.
+    # See filter_users_by_excludes for why this is needed.
+    unless opts[:all_users]
+      user_map = @users.index_by(&:uuid)
+      results = results&.filter do |r|
+        user_map.key?(r.user_uuid)
+      end
+    end
+    results
+  end
+
+  def find_canvas_os_results(opts = { all_users: false })
+    canvas_results = find_outcome_results(
+      @current_user,
+      users: opts[:all_users] ? @all_users : @users,
+      context: @context,
+      outcomes: @outcomes,
+      **opts
+    )
+
+    os_results = fetch_and_convert_os_results(**opts)
+
+    [canvas_results, os_results]
+  end
+
+  # There are two other parameters that could be concatenated that are
+  # specific when viewing sLMGB and course section LMGB
+  # For sLMGB ... user_ids plus a delimited list of students' user ids will be present in the cache key in the form of:
+  # slmgb_user_ids_1|2|3
+  # For course section LMGB ... student_id plus the section id will be present in the cache key in the form of:
+  # lmgb_section_id_123
+  # FURTHERMORE... to ensure the cache key is unique, the key also includes the @current_user.uuid, @context.uuid, & @domain_root_account.uuid
+  # example of cache key:
+  # slmgb_user_ids_5319/context_uuid/xDlV3Ca2nBRtRHX2K0ie0Wxng6grJKzEXSuIGoey/
+  #    current_user_uuid/dPu5lwmdwEJxBUqfiNlzyod3jbvVtdD0u8GrnVje/account_uuid/SYMqtl31AbcfmV6WfKkO5gqwpNr7Mvx21RHgG1bc
+  def generate_cache_results_key
+    # lmgb overall course
+    results_type = "lmgb"
+    # if section_id params is present then it is a course section and should be cached with section_id param
+    results_type = "lmgb_section_id_#{params[:section_id]}" unless params[:section_id].nil?
+    # slmgb is identified with the user_ids parameter and should be cached with user_ids params
+    results_type = "slmgb_user_ids_#{params[:user_ids].join("|")}" unless params[:user_ids].nil?
+
+    # Adding the currently logged in course, currently logged in user, and domain_root_account for session uniqueness
+    # looking around at other Rails.cache implementations, context and/or current_user and/or domain_root_account
+    # are used for uniqueness. We will use all 3's uuid for tripley safe measures.
+    # Refer to the below controllers for examples of cache keys
+    #   app/controllers/quizzes/quizzes_controller.rb
+    #   app/controllers/quizzes_next/quizzes_api_controller.rb
+    #   app/controllers/application_controller.rb
+
+    # If there are outcome ids in the params we need to take them into consideration when caching
+    outcome_ids_key = Digest::MD5.hexdigest(params[:outcome_ids].split(",").sort.join("|")) if params[:outcome_ids].present?
+
+    [results_type, "context_uuid", @context.uuid, "current_user_uuid", @current_user.uuid, "account_uuid", @domain_root_account.uuid, outcome_ids_key].compact
+  end
+
+  def needs_canvas_os_results?
+    !Account.site_admin.feature_enabled?(:outcomes_rollup_read) || includes_alignments?
+  end
+
+  def includes_alignments?
+    Api.value_to_array(params[:include]).include?("alignments")
+  end
+
+  # used in sLMGB/LMGB
+  def user_rollups(opts = { all_users: false })
+    excludes = Api.value_to_array(params[:exclude]).uniq
+
+    filter_enrollment_status
+
+    ff_read_enabled = Account.site_admin.feature_enabled?(:outcomes_rollup_read)
+
+    if needs_canvas_os_results?
+      @results, @outcome_service_results = find_canvas_os_results(opts)
+    end
+
+    if ff_read_enabled
+      rollups = stored_outcome_rollups(
+        users: opts[:all_users] ? @all_users : @users,
+        context: @context,
+        outcomes: @outcomes,
+        excludes:
+      )
+
+      # Filter outcomes without results when using stored rollups
+      if excludes.include?("missing_outcome_results")
+        outcome_ids_with_results = rollups.flat_map(&:scores).map { |score| score.outcome.id }.uniq
+        @outcome_links = @outcome_links.select { |link| outcome_ids_with_results.include?(link.content_id) }
+        @outcomes = @outcome_links.map(&:learning_outcome_content)
+      end
+
+      # Filter users without results when using stored rollups
+      # Note: stored_outcome_rollups already filters the rollups themselves,
+      # but we need to sync @users to match for the linked.users response
+      if excludes.include?("missing_user_rollups")
+        user_ids_with_results = rollups.map { |rollup| rollup.context.id }.uniq
+        @users = @users.select { |u| user_ids_with_results.include?(u.id) }
+      end
+
+      rollups
+    else
+      remove_users_without_results(@results, @outcome_service_results) if excludes.include?("missing_user_rollups")
+      remove_outcomes_without_results(@results, @outcome_service_results) if excludes.include?("missing_outcome_results")
+
+      @results = @results.preload(:user)
+      ActiveRecord::Associations.preload(@results, :learning_outcome)
+      if @outcome_service_results.nil?
+        outcome_results_rollups(results: @results, users: @users, excludes:, context: @context)
+      else
+        @outcome_service_results.push(@results).flatten!
+        outcome_results_rollups(results: @outcome_service_results, users: @users, excludes:, context: @context)
+      end
+    end
+  end
+
+  # Filters @users based on enrollment status (concluded/inactive enrollments)
+  def filter_enrollment_status
+    excludes = Api.value_to_array(params[:exclude]).uniq
+    exclude_concluded = excludes.include? "concluded_enrollments"
+    exclude_inactive = excludes.include? "inactive_enrollments"
+    return unless exclude_concluded || exclude_inactive
+
+    # automatically filter out users whose enrollment was deleted
+    filters = ["deleted"]
+    filters << "completed" if exclude_concluded
+    filters << "inactive" if exclude_inactive
+
+    # Only pull enrollment records for students included in the current course
+    # If a user is enrolled more than once in a course - i.e. the student could be in multiple
+    # sections of the course. Then we will need to one of two things:
+    # 1. If the section parameter is available - filter only by the user's enrollment status in
+    #    the section
+    # 2. If the section parameter is not available - filter by the user's enrollment status(es) in the course.
+    # NOTE: If viewing all sections and a user is concluded or inactive in one section and not another,
+    # the student should always be visible
+
+    user_query = User.joins(:enrollments)
+                     .where(enrollments: { type: ["StudentEnrollment", "StudentViewEnrollment"], course_id: @context.id })
+                     .where.not(enrollments: { workflow_state: filters })
+
+    if params[:section_id]&.to_i&.positive?
+      user_query = user_query.where(enrollments: { course_section_id: params[:section_id].to_i })
+    end
+
+    # Preserve sort order by filtering existing @users array instead of replacing it
+    filtered_user_ids = user_query.distinct.pluck(:id).to_set
+    @users = @users.select { |u| filtered_user_ids.include?(u.id) }
+    @all_users = @all_users.select { |u| filtered_user_ids.include?(u.id) } if defined?(@all_users)
+  end
+
+  # Removes users without results based on already-fetched results
+  def remove_users_without_results(canvas_results, os_results)
+    user_ids_with_results = canvas_results.pluck(:user_id).uniq
+    user_ids_with_results |= os_results.pluck(:user_id) if os_results.present?
+
+    @users = @users.select { |u| user_ids_with_results.include?(u.id) }
+  end
+
+  # Removes outcomes without results based on already-fetched results
+  def remove_outcomes_without_results(canvas_results, os_results)
+    outcome_ids_with_results = canvas_results.pluck(:learning_outcome_id).uniq
+    outcome_ids_with_results |= os_results.pluck(:learning_outcome_id) if os_results.present?
+
+    @outcome_links = @outcome_links.select { |link| outcome_ids_with_results.include?(link.content_id) }
+    @outcomes = @outcome_links.map(&:learning_outcome_content)
+  end
+
+  def current_user_enrollments
+    @context.enrollments.where(user_id: @current_user).pluck(:type)
+  end
+
+  def student_lmgb_view?
+    user_id_params = Api.value_to_array(params[:user_ids]).map(&:to_i)
+    current_user_enrollments.include?("StudentEnrollment") && (user_id_params == [@current_user.id])
+  end
+
+  def observer_lmgb_view?
+    return false unless params["user_ids"]
+
+    observer_linked_student_ids = ObserverEnrollment.observed_student_ids(@context, @current_user)
+    user_id_params = Api.value_to_array(params[:user_ids]).map(&:to_i)
+    observer_viewing_linked_students = (user_id_params - observer_linked_student_ids).empty?
+    current_user_enrollments.include?("ObserverEnrollment") && observer_viewing_linked_students
+  end
+
+  def handle_inst_statsd_outcomes_page_views
+    if student_lmgb_view? || observer_lmgb_view?
+      InstStatsd::Statsd.distributed_increment("outcomes_page_views", tags: { type: "student_lmgb" })
+    end
+  end
+
+  def user_rollups_json
+    handle_inst_statsd_outcomes_page_views
+    return user_rollups_sorted_by_score_json if params[:sort_by] == "outcome" && params[:sort_outcome_id]
+    return user_rollups_sorted_by_alignment_score_json if params[:sort_by] == "contributing_score" && params[:sort_alignment_id]
+
+    rollups = user_rollups
+    @users = Api.paginate(@users, self, api_v1_course_outcome_rollups_url(@context))
+    rollups = @users.filter_map { |u| rollups.find { |r| r.context.id == u.id } } if params[:sort_by] == "student"
+    json = outcome_results_rollups_json(rollups)
+    json[:meta] = Api.jsonapi_meta(@users, self, api_v1_course_outcome_rollups_url(@context))
+    json
+  end
+
+  def user_rollups_sorted_by_score_json
+    # since we can't sort by rollup score in the db,
+    # get all rollups (for all users), order by a given outcome's rollup score
+    # (sorting by name for duplicate scores), then reorder users
+    # from those rollups, then paginate those users, and finally
+    # only include rollups for those users
+    missing_score_sort = (params[:sort_order] == "desc") ? CanvasSort::First : CanvasSort::Last
+    rollups = user_rollups.sort_by do |r|
+      score = r.scores.find { |s| s.outcome.id.to_s == params[:sort_outcome_id] }&.score
+      [score || missing_score_sort, Canvas::ICU.collation_key(r.context.sortable_name)]
+    end
+    rollups.reverse! if params[:sort_order] == "desc"
+    # reorder users by score
+    @users = rollups.map(&:context)
+    @users = Api.paginate(@users, self, api_v1_course_outcome_rollups_url(@context))
+    # only include rollups for the paginated users
+    user_ids = @users.map(&:id)
+    rollups = rollups.select { |r| user_ids.include? r.context.id }
+    json = outcome_results_rollups_json(rollups)
+    json[:meta] = Api.jsonapi_meta(@users, self, api_v1_course_outcome_rollups_url(@context))
+    json
+  end
+
+  def user_rollups_sorted_by_alignment_score_json
+    missing_score_sort = (params[:sort_order] == "desc") ? CanvasSort::First : CanvasSort::Last
+    alignment_id_param = params[:sort_alignment_id]
+
+    content_tag_id = alignment_id_param.split("_").last.to_i
+
+    all_canvas_results = LearningOutcomeResult.active.with_active_link
+                                              .where(
+                                                context_code: @context.asset_string,
+                                                user_id: @all_users.map(&:id),
+                                                hidden: false
+                                              )
+    unless @context.grants_any_right?(@current_user, :manage_grades, :view_all_grades)
+      all_canvas_results = all_canvas_results.exclude_muted_associations
+    end
+    all_canvas_results = all_canvas_results.to_a
+    canvas_results = all_canvas_results.select { |r| r.content_tag_id == content_tag_id }
+
+    os_results = fetch_and_convert_os_results(all_users: true)
+    os_results_for_alignment = os_results&.select { |r| r.content_tag_id == content_tag_id } || []
+
+    all_alignment_results = canvas_results + os_results_for_alignment
+    results_by_user = all_alignment_results.index_by(&:user_id)
+
+    @all_users.sort_by! do |user|
+      result = results_by_user[user.id]
+      score = result&.score
+      [score || missing_score_sort, Canvas::ICU.collation_key(user.sortable_name)]
+    end
+    @all_users.reverse! if params[:sort_order] == "desc"
+
+    # When missing_user_rollups is excluded, filter @all_users to only students
+    # with any outcome results before paginating, so the pagination count and
+    # page count are consistent with the "Students with no results = OFF" setting.
+    if Api.value_to_array(params[:exclude]).include?("missing_user_rollups")
+      canvas_user_ids_with_results = all_canvas_results.map(&:user_id).uniq
+      os_user_ids_with_results = os_results&.map(&:user_id)&.uniq || []
+      user_ids_with_results = canvas_user_ids_with_results | os_user_ids_with_results
+      @all_users = @all_users.select { |u| user_ids_with_results.include?(u.id) }
+    end
+
+    @users = @all_users
+    @users = Api.paginate(@users, self, api_v1_course_outcome_rollups_url(@context))
+
+    # When sorting by contributing score, don't filter out users or outcomes without results
+    # since we want to show all users sorted by this specific alignment
+    original_exclude = params[:exclude]
+    params[:exclude] = Api.value_to_array(params[:exclude]).reject { |e| e == "missing_user_rollups" || e == "missing_outcome_results" }
+
+    rollups = user_rollups
+    json = outcome_results_rollups_json(rollups)
+    json[:meta] = Api.jsonapi_meta(@users, self, api_v1_course_outcome_rollups_url(@context))
+    params[:exclude] = original_exclude
+
+    json
+  end
+
+  # used in LMGB
+  def aggregate_rollups_json
+    # calculating averages for all users in the context and only returning one
+    # rollup, so don't paginate users in this method.
+
+    filter_enrollment_status
+
+    @results, @outcome_service_results = find_canvas_os_results(all_users: false)
+    @results = @results.preload(:user)
+
+    ActiveRecord::Associations.preload(@results, :learning_outcome)
+    aggregate_rollups = nil
+    if @outcome_service_results.nil?
+      aggregate_rollups = [aggregate_outcome_results_rollup(@results, @context, params[:aggregate_stat])]
+    else
+      @outcome_service_results.push(@results).flatten!
+      aggregate_rollups = [aggregate_outcome_results_rollup(@outcome_service_results, @context, params[:aggregate_stat])]
+    end
+
+    aggregate_outcome_results_rollups_json(aggregate_rollups)
+  end
+
+  def linked_include_collections
+    linked = {}
+    includes = Api.value_to_array(params[:include])
+    includes.uniq.each do |include_name|
+      linked[include_name] = send(include_method_name(include_name))
+    end
+    linked
+  end
+
+  def include_courses
+    outcome_results_linked_courses_json([@context])
+  end
+
+  def include_outcomes
+    percents = {}
+    percents = rating_percents(user_rollups(all_users: true), context: @context) if params[:rating_percents] == "true"
+    outcome_results_include_outcomes_json(@outcomes, @context, percents, @outcome_links)
+  end
+
+  def include_outcome_groups
+    outcome_results_include_outcome_groups_json(@outcome_groups)
+  end
+
+  def include_outcome_links
+    outcome_results_include_outcome_links_json(@outcome_links, @context)
+  end
+
+  def include_outcome_paths
+    build_outcome_paths
+    @outcome_paths
+  end
+
+  def include_users
+    outcome_results_linked_users_json(@users, @context)
+  end
+
+  def include_alignments
+    canvas_results = @results.respond_to?(:to_a) ? @results.to_a : (@results || [])
+    all_results = @outcome_service_results.nil? ? canvas_results : (canvas_results + @outcome_service_results)
+    content_tag_ids = all_results.map(&:content_tag_id).uniq
+
+    alignments = ContentTag.where(id: content_tag_ids).preload(:content).map(&:content).uniq
+    outcome_results_include_alignments_json(alignments)
+  end
+
+  def include_outcomes_alignments
+    alignments = ContentTag.learning_outcome_alignments.not_deleted.where(learning_outcome_id: @outcomes).preload(:content).map(&:content).uniq
+    outcome_results_include_alignments_json(alignments)
+  end
+
+  def include_assignments
+    results = @outcome_service_results.nil? ? @results : @outcome_service_results
+    assignments = results.map { |result| result.assignment || result.alignment&.content }
+    outcome_results_assignments_json(assignments.uniq)
+  end
+
+  def require_outcome_context
+    reject! "invalid context type" unless @context.is_a?(Course)
+
+    return true if @context.grants_any_right?(@current_user, session, :manage_grades, :view_all_grades)
+
+    reject! "users not specified and no access to all grades", :forbidden unless params[:user_ids]
+    user_id_params = Api.value_to_array(params[:user_ids])
+    user_ids = Api.map_ids(user_id_params, users_for_outcome_context, @domain_root_account, @current_user)
+    verify_readable_grade_enrollments(user_ids)
+  end
+
+  def verify_aggregate_parameter
+    aggregate = params[:aggregate]
+    reject! "invalid aggregate parameter value" if aggregate && !%w[course].include?(aggregate)
+    true
+  end
+
+  def verify_aggregate_stat_parameter
+    aggregate_stat = params[:aggregate_stat]
+    reject! "invalid aggregate_stat parameter value" if aggregate_stat && !%w[mean median].include?(aggregate_stat)
+    true
+  end
+
+  def verify_sort_parameters
+    return true unless params[:sort_by]
+
+    sort_by = params[:sort_by]
+    sortable_fields = %w[student student_name student_sis_id student_integration_id student_login_id outcome contributing_score]
+    reject! "invalid sort_by parameter value" if sort_by && !sortable_fields.include?(sort_by)
+    if sort_by == "outcome"
+      sort_outcome_id = params[:sort_outcome_id]
+      reject! "missing required sort_outcome_id parameter value" unless sort_outcome_id
+      reject! "invalid sort_outcome_id parameter value" unless /\A\d+\z/.match?(sort_outcome_id)
+    end
+    if sort_by == "contributing_score"
+      sort_alignment_id = params[:sort_alignment_id]
+      reject! "missing required sort_alignment_id parameter value" unless sort_alignment_id
+      reject! "invalid sort_alignment_id parameter value" unless /\A[A-Z]_\d+\z/.match?(sort_alignment_id)
+    end
+    sort_order = params[:sort_order]
+    reject! "invalid sort_order parameter value" if sort_by && sort_order && !%w[asc desc].include?(sort_order)
+    true
+  end
+
+  def verify_include_parameter
+    Api.value_to_array(params[:include]).each do |include_name|
+      case include_name
+      when "courses"
+        reject! "can't include courses unless aggregate is 'course'" if params[:aggregate] != "course"
+      when "users"
+        reject! "can't include users unless aggregate is not set" if params[:aggregate].present?
+      when "alignment_distributions"
+        # Used by mastery_distribution endpoint, no additional validation needed
+      else
+        reject! "invalid include: #{include_name}" unless respond_to? include_method_name(include_name), :include_private
+      end
+    end
+    true
+  end
+
+  def include_method_name(include_name)
+    "include_#{include_name.parameterize.underscore}"
+  end
+
+  def require_outcomes
+    reject! "can't filter by both outcome_ids and outcome_group_id" if params[:outcome_ids] && params[:outcome_group_id]
+
+    @outcome_groups = @context.learning_outcome_groups
+    outcome_group_ids = @outcome_groups.pluck(:id)
+    @outcome_links = []
+    if params[:outcome_id]
+      outcome_id = params[:outcome_id].to_i
+      @outcome_links = ContentTag.learning_outcome_links.active.preload(:learning_outcome_content)
+                                 .where(content_id: outcome_id, context: @context)
+                                 .select("DISTINCT ON (content_tags.content_id) content_tags.*")
+      @outcomes = @outcome_links.map(&:learning_outcome_content)
+      reject! "outcome not found in this context" if @outcomes.empty?
+    elsif params[:outcome_group_id]
+      group_id = params[:outcome_group_id].to_i
+      reject! "can only include an outcome group id in the outcome context" unless outcome_group_ids.include?(group_id)
+      @outcome_links = ContentTag.learning_outcome_links.active.where(associated_asset_id: group_id).preload(:learning_outcome_content)
+      @outcomes = @outcome_links.map(&:learning_outcome_content)
+    elsif params[:outcome_ids]
+      outcome_ids = Api.value_to_array(params[:outcome_ids]).map(&:to_i).uniq
+      # outcomes themselves are not duped when moved into a new group, so we
+      # need to instead look at the uniqueness of the associating content tag's
+      # outcome id in order to ensure we get the correct result
+      # from the query without rendering the reject! check moot
+
+      @outcome_links = ContentTag.learning_outcome_links.active.preload(:learning_outcome_content)
+                                 .where(content_id: outcome_ids, context: @context)
+                                 .select("DISTINCT ON (content_tags.content_id) content_tags.*")
+      @outcomes = @outcome_links.map(&:learning_outcome_content)
+      reject! "can only include id's of outcomes in the outcome context" if @outcomes.count != outcome_ids.count
+    else
+      outcome_group_ids.each_slice(100) do |outcome_group_ids_slice|
+        @outcome_links += ContentTag.learning_outcome_links.active
+                                    .where(associated_asset_id: outcome_group_ids_slice)
+                                    .joins("LEFT OUTER JOIN #{UserLmgbOutcomeOrderings.quoted_table_name} as u
+                                              ON u.learning_outcome_id = content_tags.content_id
+                                              AND u.user_id = #{@current_user.id}
+                                              AND u.course_id = #{@context.id}")
+                                    .select("#{ContentTag.quoted_table_name}.*, u.position")
+      end
+
+      associations = [:learning_outcome_content]
+      if Api.value_to_array(params[:include]).include? "outcome_paths"
+        associations << { associated_asset: :learning_outcome_group }
+      end
+      @outcome_links.each_slice(100) do |outcome_links_slice|
+        ActiveRecord::Associations.preload(outcome_links_slice, associations)
+      end
+
+      apply_outcome_arrangement
+
+      @outcomes = @outcome_links.map(&:learning_outcome_content)
+    end
+  end
+
+  def apply_outcome_arrangement
+    return unless @outcome_links.is_a?(Array) && @outcome_links.any?
+
+    settings = @current_user.get_preference(:learning_mastery_gradebook_settings, @context.global_id) || {}
+
+    case settings["outcome_arrangement"]
+    when "alphabetical"
+      @outcome_links.sort_by! { |link| link.learning_outcome_content&.title.to_s.downcase }
+    when "custom"
+      @outcome_links.sort_by! { |link| [link[:position] || Float::INFINITY, link[:id]] }
+    else
+      # Default to upload order
+      @outcome_links.sort_by!(&:id)
+    end
+  end
+
+  def build_outcome_paths
+    @outcome_paths = @outcome_links.map do |link|
+      parts = outcome_group_prefix(link.associated_asset).push({ name: link.learning_outcome_content.title })
+      { id: link.learning_outcome_content.id, parts: }
+    end
+  end
+
+  def outcome_group_prefix(group)
+    unless group.parent_outcome_group
+      return []
+    end
+
+    outcome_group_prefix(group.parent_outcome_group).push({ name: group.title })
+  end
+
+  def require_users
+    reject! "cannot specify both user_ids and section_id" if params[:user_ids] && params[:section_id]
+    if params[:user_ids]
+      user_ids = Api.value_to_array(params[:user_ids]).uniq
+      @users = api_find_all(users_for_outcome_context, user_ids).distinct.to_a
+      reject!("can only include id's of users in the outcome context") if @users.count != user_ids.count
+    elsif params[:section_id]
+      @section = @context.course_sections.where(id: params[:section_id].to_i).first
+      reject! "invalid section id" unless @section
+      @users = apply_sort_order(@section.all_students).to_a
+    end
+    @users ||= users_for_outcome_context.to_a
+    @users.sort_by!(&:id) unless params[:sort_by]
+    # cache all users, since pagination in #user_rollups_json may remove some
+    # when we need all users when calculating rating percents
+    @all_users = @users
+  end
+
+  def users_for_outcome_context
+    # this only works for courses; when other context types are added, this will
+    # need to treat them differently.
+    students = if @domain_root_account.feature_enabled?(:limit_section_visibility_in_lmgb)
+                 @context.students_visible_to(@current_user, include: :priors)
+               else
+                 @context.all_students
+               end
+
+    apply_sort_order(students).select("users.*, #{User.sortable_name_order_by_clause("users")}").distinct
+  end
+
+  def apply_sort_order(relation)
+    order_by = case params[:sort_by]
+               when "student_name"
+                 "name"
+               when "student_sis_id"
+                 "sis_id"
+               when "student_integration_id"
+                 "integration_id"
+               when "student_login_id"
+                 "login_id"
+               when "student"
+                 "username"
+               else
+                 nil
+               end
+
+    if order_by.nil?
+      relation
+    else
+      UserSearch.order_scope(relation, @context, { sort: order_by, order: params[:sort_order] })
+    end
+  end
+end

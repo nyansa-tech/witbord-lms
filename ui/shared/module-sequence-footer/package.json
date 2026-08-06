@@ -1,0 +1,8 @@
+{
+  "name": "@canvas/module-sequence-footer",
+  "private": true,
+  "version": "1.0.0",
+  "author": "neme",
+  "main": "./jquery/index.jsx",
+  "owner": "LX"
+}

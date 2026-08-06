@@ -1,0 +1,10 @@
+production:
+  address: <%= ENV.fetch('SES_SMTP_ADDRESS', 'email-smtp.af-south-1.amazonaws.com') %>
+  port: <%= ENV.fetch('SES_SMTP_PORT', '587') %>
+  user_name: <%= ENV['SES_SMTP_USER'] %>
+  password: <%= ENV['SES_SMTP_PASSWORD'] %>
+  domain: <%= ENV.fetch('EMAIL_DOMAIN', 'witbord.com') %>
+  outgoing_address: <%= ENV.fetch('EMAIL_FROM', 'notifications@witbord.com') %>
+  default_name: <%= ENV.fetch('EMAIL_DEFAULT_NAME', 'Witbord') %>
+  enable_starttls_auto: true
+  authentication: plain

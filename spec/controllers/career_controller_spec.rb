@@ -1,0 +1,191 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2025 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+describe CareerController do
+  before :once do
+    course_with_teacher(active_all: true)
+    @account = @course.account
+    @course.update!(horizon_course: true)
+  end
+
+  let(:config) { instance_double(CanvasCareer::Config, learning_provider_app_launch_url: "https://example.com/lp", learner_app_launch_url: "https://example.com/learner", public_app_config: { some: "config" }) }
+  let(:resolver) { instance_double(CanvasCareer::ExperienceResolver) }
+
+  before do
+    allow(CanvasCareer::ExperienceResolver).to receive(:new).and_return(resolver)
+    allow(CanvasCareer::Config).to receive(:new).with(@course.root_account, anything).and_return(config)
+  end
+
+  describe "GET show" do
+    context "without authentication" do
+      it "returns unauthorized for bare /career route" do
+        get :show
+        assert_unauthorized
+      end
+
+      it "returns unauthorized for non-public course" do
+        get :show, params: { course_id: @course.id }
+        assert_unauthorized
+      end
+
+      it "returns unauthorized for public academic (non-horizon) course" do
+        academic_course = course_factory(active_all: true, is_public: true)
+        get :show, params: { course_id: academic_course.id }
+        assert_unauthorized
+      end
+
+      it "redirects to login for public but unpublished horizon course" do
+        unpublished_course = course_factory(account: @account)
+        unpublished_course.update!(horizon_course: true, is_public: true, workflow_state: "claimed")
+        @account.enable_feature!(:horizon_course_setting)
+        get :show, params: { course_id: unpublished_course.id }
+        assert_unauthorized
+      end
+
+      context "with a public horizon course" do
+        before do
+          @account.enable_feature!(:horizon_course_setting)
+          @course.update!(is_public: true)
+          allow(controller).to receive(:deferred_js_bundle)
+          allow(controller).to receive(:remote_env)
+        end
+
+        it "renders the SPA without requiring login" do
+          get :show, params: { course_id: @course.id }
+          expect(response).to have_http_status(:ok)
+          expect(response).to render_template("layouts/bare")
+        end
+
+        it "loads the learner app for anonymous users" do
+          expect(controller).to receive(:remote_env).with(
+            canvas_career_learner: "https://example.com/learner"
+          )
+          get :show, params: { course_id: @course.id }
+        end
+
+        it "does not invoke ExperienceResolver" do
+          expect(CanvasCareer::ExperienceResolver).not_to receive(:new)
+          get :show, params: { course_id: @course.id }
+        end
+      end
+    end
+
+    context "with authenticated user" do
+      before do
+        user_session(@teacher)
+        allow(controller).to receive(:deferred_js_bundle)
+        allow(controller).to receive(:remote_env)
+      end
+
+      context "when ExperienceResolver returns ACADEMIC" do
+        before do
+          allow(resolver).to receive(:resolve).and_return(CanvasCareer::Constants::App::ACADEMIC)
+        end
+
+        it "redirects to root path with career theme params" do
+          get :show, params: { course_id: @course.id }
+          expected_params = CanvasCareer::Constants::QueryParams::ACADEMIC_CONTENT_ONLY_CAREER_THEME
+          expect(response).to redirect_to("/?#{expected_params.to_query}")
+        end
+      end
+
+      context "when ExperienceResolver returns CAREER_LEARNING_PROVIDER" do
+        before do
+          allow(resolver).to receive(:resolve).and_return(CanvasCareer::Constants::App::CAREER_LEARNING_PROVIDER)
+        end
+
+        it "sets up the JS environment with features" do
+          get :show, params: { course_id: @course.id }
+
+          expect(assigns[:js_env][:CANVAS_CAREER][:FEATURES]).to include(
+            horizon_hris_integrations: false,
+            horizon_user_profile_page: false,
+            horizon_manual_dashboard_builder: false,
+            horizon_learning_library: false,
+            horizon_learning_library_ms2: false,
+            horizon_learning_library_ms3: false,
+            horizon_study_tools: false,
+            horizon_chart_view: false,
+            horizon_native_permissions_page: false,
+            horizon_block_content_editor: false,
+            horizon_native_inbox: false,
+            horizon_autopilot: false
+          )
+        end
+
+        it "sets up the JS environment with MAX_GROUP_CONVERSATION_SIZE" do
+          Setting.set("max_group_conversation_size", 2)
+
+          get :show, params: { course_id: @course.id }
+
+          expect(assigns[:js_env][:MAX_GROUP_CONVERSATION_SIZE]).to eq(2)
+        end
+
+        it "calls remote_env with learning provider URL" do
+          expect(controller).to receive(:remote_env).with(
+            canvas_career_learning_provider: "https://example.com/lp"
+          )
+          get :show, params: { course_id: @course.id }
+        end
+
+        it "calls deferred_js_bundle with :canvas_career" do
+          expect(controller).to receive(:deferred_js_bundle).with(:canvas_career)
+          get :show, params: { course_id: @course.id }
+        end
+
+        it "renders with bare layout" do
+          get :show, params: { course_id: @course.id }
+          expect(response).to render_template("layouts/bare")
+        end
+
+        it "assigns @include_masquerade_layout to true" do
+          allow(resolver).to receive(:resolve).and_return(CanvasCareer::Constants::App::CAREER_LEARNING_PROVIDER)
+          get :show, params: { course_id: @course.id }
+          expect(assigns(:include_masquerade_layout)).to be(true)
+        end
+      end
+
+      context "when ExperienceResolver returns CAREER_LEARNER" do
+        before do
+          allow(resolver).to receive(:resolve).and_return(CanvasCareer::Constants::App::CAREER_LEARNER)
+        end
+
+        it "calls remote_env with learner URL" do
+          expect(controller).to receive(:remote_env).with(
+            canvas_career_learner: "https://example.com/learner"
+          )
+          get :show, params: { course_id: @course.id }
+        end
+
+        it "calls deferred_js_bundle with :canvas_career" do
+          expect(controller).to receive(:deferred_js_bundle).with(:canvas_career)
+          get :show, params: { course_id: @course.id }
+        end
+      end
+
+      it "injects canvas_career_config" do
+        allow(resolver).to receive(:resolve).and_return(CanvasCareer::Constants::App::CAREER_LEARNER)
+
+        get :show, params: { course_id: @course.id }
+        expect(controller).to have_received(:remote_env).with(canvas_career_config: { some: "config" })
+      end
+    end
+  end
+end

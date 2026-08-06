@@ -1,0 +1,46 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2013 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+describe "feature_flag_definition_spec" do
+  let(:skip_features) { %w[block_editor block_template_editor] }
+
+  Feature.definitions.each_key do |feature_name|
+    it "#{feature_name} should have a display_name and description lambdas" do
+      skip if skip_features.include?(feature_name)
+
+      feature = Feature.definitions[feature_name]
+      expect(feature).not_to be_nil
+      expect(feature.display_name.call).not_to be_nil
+      expect(feature.description.call).not_to be_nil
+    end
+  end
+
+  FeatureFlags::Loader.load_yaml_files.each do |name, definition|
+    %i[custom_transition_proc after_state_change_proc visible_on].each do |hook|
+      next unless definition[hook]
+
+      it "#{name} hook for #{hook} (#{definition[hook]}) should exist in FeatureFlags::Hooks as a static method" do
+        skip if skip_features.include?(name)
+
+        expect(FeatureFlags::Hooks.respond_to?(definition[hook])).to be true
+      end
+    end
+  end
+end

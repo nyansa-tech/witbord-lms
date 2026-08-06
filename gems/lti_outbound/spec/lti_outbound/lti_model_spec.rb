@@ -1,0 +1,54 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2014 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+describe LtiOutbound::LTIModel do
+  let(:dummy) do
+    Class.new(LtiOutbound::LTIModel) do
+      proc_accessor :attribute
+    end
+  end
+
+  describe "#proc_accessor" do
+    it "acts as a regular attr_accessor for assigned values" do
+      model = dummy.new
+      model.attribute = "test_value"
+      expect(model.attribute).to eq "test_value"
+    end
+
+    it "handles multiple attributes at once" do
+      dummy.send(:proc_accessor, :test1, :test2)
+    end
+
+    it "evaluates a proc when assigned a proc" do
+      model = dummy.new
+      model.attribute = -> { "test_value" }
+      expect(model.attribute).to eq "test_value"
+    end
+
+    it "caches the result of the executed proc" do
+      model = dummy.new
+      called = 0
+      model.attribute = -> { called += 1 }
+      2.times { model.attribute }
+
+      expect(called).to be 1
+    end
+  end
+end

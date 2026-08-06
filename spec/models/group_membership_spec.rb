@@ -1,0 +1,924 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2011 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+describe GroupMembership do
+  it "ensures a mutually exclusive relationship" do
+    category = Account.default.group_categories.create!(name: "blah")
+    group1 = category.groups.create!(context: Account.default)
+    group2 = category.groups.create!(context: Account.default)
+    user_model
+
+    # start with one active membership
+    gm1 = group1.group_memberships.create!(user: @user, workflow_state: "accepted")
+    expect(gm1.reload).to be_accepted
+
+    # adding another should mark the first as deleted
+    gm2 = group2.group_memberships.create!(user: @user, workflow_state: "accepted")
+    expect(gm2.reload).to be_accepted
+    expect(gm1.reload).to be_deleted
+
+    # restoring the first should mark the second as deleted
+    gm1.workflow_state = "accepted"
+    gm1.save!
+    expect(gm1.reload).to be_accepted
+    expect(gm2.reload).to be_deleted
+
+    # should work even if we start with bad data (two accepted memberships)
+    GroupMembership.where(id: gm2).update_all(workflow_state: "accepted")
+    gm1.save!
+    expect(gm1.reload).to be_accepted
+    expect(gm2.reload).to be_deleted
+  end
+
+  it "is not valid if the group is full" do
+    course_factory
+    category = @course.group_categories.build(name: "category 1")
+    category.group_limit = 2
+    category.save!
+    group = category.groups.create!(context: @course)
+    # when the group is full
+    group.group_memberships.create!(user: user_model, workflow_state: "accepted")
+    group.group_memberships.create!(user: user_model, workflow_state: "accepted")
+    # expect
+    membership = group.reload.group_memberships.build(user: user_model, workflow_state: "accepted")
+    expect(membership).not_to be_valid
+    expect(membership.errors[:group_id]).to eq ["The group is full."]
+  end
+
+  context "section homogeneity" do
+    # can't use 'course' because it is defined in spec_helper, so use 'course1'
+    let_once(:course1) do
+      course_with_teacher(active_all: true)
+      @course
+    end
+    let_once(:student) do
+      student = user_model
+      course1.enroll_student(student)
+      student
+    end
+    let_once(:group_category) { GroupCategory.student_organized_for(course1) }
+    let_once(:group) { course1.groups.create(group_category:) }
+    let_once(:group_membership) { group.group_memberships.create(user: student) }
+
+    it "has a validation error on new record" do
+      membership = GroupMembership.new
+
+      allow(membership).to receive_messages(user: instance_double(User, name: "test user"),
+                                            group: instance_double(Group, name: "test group"),
+                                            restricted_self_signup?: true,
+                                            has_common_section_with_me?: false)
+      expect(membership.save).not_to be_truthy
+      expect(membership.errors.size).to eq 1
+      expect(membership.errors[:user_id].to_s).to match(/test user does not share a section/)
+    end
+
+    it "passes validation on update" do
+      expect do
+        group_membership.save!
+      end.not_to raise_error
+    end
+  end
+
+  context "Notifications" do
+    context "in published course" do
+      before do
+        course_with_teacher(active_all: true)
+        @student1 = student_in_course(active_all: true).user
+        @group1 = @course.groups.create(group_category: GroupCategory.student_organized_for(@course))
+      end
+
+      it "sends message if the first membership in a student organized group", priority: "1" do
+        Notification.create(name: "New Student Organized Group", category: "TestImmediately")
+        communication_channel(@teacher, { username: "test_channel_email_#{@teacher.id}@test.com", active_cc: true })
+
+        group_membership = @group1.group_memberships.create(user: @student1)
+        expect(group_membership.messages_sent["New Student Organized Group"]).not_to be_empty
+      end
+
+      it "sends message when a new student is invited to group and auto-joins", priority: "1" do
+        Notification.create!(name: "New Context Group Membership", category: "TestImmediately")
+        student2 = student_in_course(active_all: true).user
+        communication_channel(student2, { username: "test_channel_email_#{student2.id}@test.com", active_cc: true })
+        group_membership = @group1.group_memberships.create(user: @student1)
+        @group1.add_user(student2)
+        expect(group_membership.messages_sent["New Context Group Membership"]).not_to be_empty
+      end
+
+      it "does not dispatch a message if the membership has been created with SIS" do
+        membership = @group1.group_memberships.build(user: @student1)
+        Notification.create!(name: "New Context Group Membership", category: "TestImmediately")
+        Notification.create!(name: "New Context Group Membership Invitation", category: "TestImmediately")
+        batch = @course.root_account.sis_batches.create!
+        membership.sis_batch_id = batch.id
+        membership.save!
+        expect(membership.messages_sent).to be_empty
+      end
+
+      it "dispatches a message if the course is available and has started" do
+        membership = @group1.group_memberships.build(user: @student1)
+        Notification.create!(name: "New Context Group Membership", category: "TestImmediately")
+        membership.save!
+        expect(membership.messages_sent["New Context Group Membership"]).not_to be_empty
+      end
+
+      it "does not dispatch a message if the course is available and has not started yet" do
+        course = course_factory(active_all: true)
+        course.start_at = 1.day.from_now
+        course.restrict_enrollments_to_course_dates = true
+        course.save!
+        student_in_course(active_all: true, course:)
+        group1 = course.groups.create(group_category: GroupCategory.student_organized_for(course))
+        membership = group1.group_memberships.build(user: @student)
+        Notification.create!(name: "New Context Group Membership", category: "TestImmediately")
+        Notification.create!(name: "New Context Group Membership Invitation", category: "TestImmediately")
+        membership.save!
+        expect(membership.messages_sent).to be_empty
+      end
+    end
+
+    it "does not dispatch a message if the course is unpublished" do
+      course_with_teacher
+      student = user_model
+      group = @course.groups.create(group_category: GroupCategory.student_organized_for(@course))
+      membership = group.group_memberships.build(user: student)
+      @course.enroll_student(student)
+      Notification.create!(name: "New Context Group Membership", category: "TestImmediately")
+      membership.save!
+      expect(membership.messages_sent).to be_empty
+    end
+
+    it "does not dispatch a message if the course is soft-concluded" do
+      course_with_teacher(active_all: true)
+      @course.soft_conclude!
+      @course.save!
+      student = user_model
+      group = @course.groups.create(group_category: GroupCategory.student_organized_for(@course))
+      membership = group.group_memberships.build(user: student)
+      @course.enroll_student(student)
+      Notification.create!(name: "New Context Group Membership", category: "TestImmediately")
+      membership.save!
+      expect(membership.messages_sent).to be_empty
+    end
+  end
+
+  it "is invalid if group wants a common section, but doesn't have one with the user" do
+    course_with_teacher(active_all: true)
+    section1 = @course.course_sections.create
+    section2 = @course.course_sections.create
+    user1 = section1.enroll_user(user_model, "StudentEnrollment").user
+    user2 = section2.enroll_user(user_model, "StudentEnrollment").user
+    group_category = @course.group_categories.build(name: "My Category")
+    group_category.configure_self_signup(true, true)
+    group_category.save
+    group = group_category.groups.create(context: @course)
+    group.add_user(user1)
+    membership = group.group_memberships.build(user: user2)
+    expect(membership).not_to be_valid
+    expect(membership.errors[:user_id]).not_to be_nil
+  end
+
+  context "active_given_enrollments?" do
+    before :once do
+      @enrollment = course_with_student(active_all: true)
+      @course_group = @course.groups.create!
+      @membership = @course_group.add_user(@student)
+    end
+
+    it "is false if the membership is pending (requested)" do
+      @membership.workflow_state = "requested"
+      expect(@membership.active_given_enrollments?([@enrollment])).to be_falsey
+    end
+
+    it "is false if the membership is terminated (deleted)" do
+      @membership.workflow_state = "deleted"
+      expect(@membership.active_given_enrollments?([@enrollment])).to be_falsey
+    end
+
+    it "is false given a course group without an enrollment in the list" do
+      expect(@membership.active_given_enrollments?([])).to be_falsey
+    end
+
+    it "is true for other course groups" do
+      expect(@membership.active_given_enrollments?([@enrollment])).to be_truthy
+    end
+
+    it "is true for account groups regardless of enrollments" do
+      @account_group = Account.default.groups.create!
+      @membership = @account_group.add_user(@student)
+      expect(@membership.active_given_enrollments?([])).to be_truthy
+    end
+
+    it "is not deleted when the enrollment is destroyed" do
+      @enrollment.destroy
+      @membership.reload
+      expect(@membership.workflow_state).to eq "deleted"
+    end
+
+    it "softs delete when membership destroyed" do
+      @membership.destroy
+      @membership.reload
+      expect(@membership.workflow_state).to eq "deleted"
+    end
+  end
+
+  it "auto_joins for backwards compatibility" do
+    user_model
+    group_model
+    group_membership_model(workflow_state: "invited")
+    expect(@group_membership.workflow_state).to eq "accepted"
+  end
+
+  it "does not auto_join for communities" do
+    user_model
+    @communities = GroupCategory.communities_for(Account.default)
+    group_model(name: "Algebra Teachers", group_category: @communities, join_level: "parent_context_request")
+    group_membership_model(user: @user, workflow_state: "requested")
+    expect(@group_membership.workflow_state).to eq "requested"
+  end
+
+  context "permissions" do
+    before :once do
+      course_with_teacher(active_all: true)
+    end
+
+    it "allows someone to join an open, non-community group" do
+      student_in_course(active_all: true)
+      student_organized = GroupCategory.student_organized_for(@course)
+      student_group = student_organized.groups.create!(context: @course, join_level: "parent_context_auto_join")
+      expect(GroupMembership.new(user: @student, group: student_group).grants_right?(@student, :create)).to be_truthy
+
+      course_groups = group_category
+      course_groups.configure_self_signup(true, false)
+      course_groups.save!
+      course_group = course_groups.groups.create!(context: @course, join_level: "invitation_only")
+      expect(GroupMembership.new(user: @student, group: course_group).grants_right?(@student, :create)).to be_truthy
+    end
+
+    it "allows someone to be added to a non-community group" do
+      student_in_course(active_all: true)
+      course_groups = group_category
+      course_group = course_groups.groups.create!(context: @course, join_level: "invitation_only")
+      expect(GroupMembership.new(user: @student, group: course_group).grants_right?(@teacher, :create)).to be_truthy
+
+      @account = @course.root_account
+      account_admin_user(active_all: true, account: @account)
+      account_groups = group_category(context: @account)
+      account_group = account_groups.groups.create!(context: @account)
+      expect(GroupMembership.new(user: @student, group: account_group).grants_right?(@admin, :create)).to be_truthy
+    end
+
+    it "allows a teacher to join a student to a group in an unpublished course" do
+      @course.claim!
+      student_in_course(active_all: true)
+      course_groups = group_category
+      course_group = course_groups.groups.create!(context: @course, join_level: "invitation_only")
+      expect(GroupMembership.new(user: @student, group: course_group).grants_right?(@teacher, :create)).to be_truthy
+    end
+
+    it "allows someone to join an open community group" do
+      @account = @course.root_account
+      community_groups = GroupCategory.communities_for(@account)
+      community_group = community_groups.groups.create!(context: @account, join_level: "parent_context_auto_join")
+      expect(GroupMembership.new(user: @teacher, group: community_group).grants_right?(@teacher, :create)).to be_truthy
+    end
+
+    it "does not allow someone to be added to a community group" do
+      @account = @course.root_account
+      account_admin_user(active_all: true, account: @account)
+      community_groups = GroupCategory.communities_for(@account)
+      community_group = community_groups.groups.create!(context: @account, join_level: "parent_context_auto_join")
+      expect(GroupMembership.new(user: @teacher, group: community_group).grants_right?(@admin, :create)).to be_falsey
+    end
+
+    it "allows a moderator to kick someone from a community" do
+      @account = @course.root_account
+      account_admin_user(active_all: true, account: @account)
+      community_groups = GroupCategory.communities_for(@account)
+      community_group = community_groups.groups.create!(context: @account, join_level: "parent_context_auto_join")
+      community_group.add_user(@admin, "accepted", true)
+      community_group.add_user(@teacher, "accepted", false)
+      expect(GroupMembership.where(group_id: community_group.id, user_id: @teacher.id).first.grants_right?(@admin, :delete)).to be_truthy
+    end
+
+    it "does not allow students in group to have any membership permissions" do
+      student_in_course(active_all: true)
+      @category = @course.group_categories.build(name: "category 1", non_collaborative: true)
+      @category.save!
+      @group = @category.groups.create!(context: @course)
+      @membership = @group.add_user(@student)
+
+      expect(@membership.grants_right?(@student, :read)).to be_falsey
+      expect(@membership.grants_right?(@student, :delete)).to be_falsey
+      expect(@membership.grants_right?(@student, :update)).to be_falsey
+      expect(@membership.grants_right?(@student, :create)).to be_falsey
+      expect(@membership.check_policy(@student)).to be_empty
+
+      expect(@membership.user_id).to eq @student.id
+    end
+
+    it "does not allow ta without permissions to add to a tag" do
+      Account.default.settings[:allow_assign_to_differentiation_tags] = { value: true }
+      Account.default.save!
+      Account.default.reload
+      teacher_in_course(active_all: true)
+      student_in_course(active_all: true)
+      ta_in_course(active_all: true)
+      @category = @course.group_categories.build(name: "category 1", non_collaborative: true)
+      @category.save!
+
+      @group = @category.groups.create!(context: @course)
+      @membership = @group.add_user(@student)
+
+      # By default TAs don't have Dif tag permissions
+      expect(@membership.grants_right?(@ta, :read)).to be_falsey
+      expect(@membership.grants_right?(@ta, :delete)).to be_falsey
+      expect(@membership.grants_right?(@ta, :update)).to be_falsey
+      expect(@membership.grants_right?(@ta, :create)).to be_falsey
+      expect(@membership.check_policy(@ta)).to be_empty
+
+      # Students shouldn't have these permissions for dif tags
+      expect(@membership.grants_right?(@student, :read)).to be_falsey
+      expect(@membership.grants_right?(@student, :delete)).to be_falsey
+      expect(@membership.grants_right?(@student, :update)).to be_falsey
+      expect(@membership.grants_right?(@student, :create)).to be_falsey
+      expect(@membership.check_policy(@student)).to be_empty
+
+      # Teachers have these permissions by default
+      expect(@membership.grants_right?(@teacher, :read)).to be_truthy
+      expect(@membership.grants_right?(@teacher, :delete)).to be_truthy
+      expect(@membership.grants_right?(@teacher, :update)).to be_truthy
+      expect(@membership.grants_right?(@teacher, :create)).to be_truthy
+    end
+  end
+
+  it "updates group leadership as membership changes" do
+    course_factory
+    @category = @course.group_categories.build(name: "category 1")
+    @category.save!
+    @group = @category.groups.create!(context: @course)
+    @category.auto_leader = "first"
+    @category.save!
+    leader = user_model
+    @group.group_memberships.create!(user: leader, workflow_state: "accepted")
+    expect(@group.reload.leader).to eq leader
+  end
+
+  describe "updating cached due dates" do
+    before :once do
+      course_factory
+      @group_category = @course.group_categories.create!(name: "category")
+      @membership = group_with_user(group_context: @course, group_category: @group_category)
+
+      # back-populate associations so we don't need to reload
+      @membership.group = @group
+      @group.group_category = @group_category
+
+      @assignments = Array.new(3) { assignment_model(course: @course) }
+      @assignments.last.group_category = nil
+      @assignments.last.save!
+    end
+
+    it "triggers a batch when membership is created" do
+      new_user = user_factory
+
+      expect(SubmissionLifecycleManager).not_to receive(:recompute)
+      expect(SubmissionLifecycleManager).to receive(:recompute_users_for_course).with(
+        new_user.id,
+        @course.id,
+        match_array(@assignments[0..1].map(&:id))
+      )
+
+      @group.group_memberships.create(user: new_user)
+    end
+
+    it "triggers a batch when membership is deleted" do
+      expect(SubmissionLifecycleManager).not_to receive(:recompute)
+      expect(SubmissionLifecycleManager).to receive(:recompute_users_for_course).with(
+        @membership.user.id,
+        @course.id,
+        match_array(@assignments[0..1].map(&:id))
+      )
+      @membership.destroy
+    end
+
+    it "does not trigger when nothing changed" do
+      expect(SubmissionLifecycleManager).not_to receive(:recompute)
+      expect(SubmissionLifecycleManager).not_to receive(:recompute_course)
+      @membership.save
+    end
+
+    it "does not trigger when it's an account group" do
+      expect(SubmissionLifecycleManager).not_to receive(:recompute)
+      expect(SubmissionLifecycleManager).not_to receive(:recompute_course)
+      @group = Account.default.groups.create!(name: "Group!")
+      @group.group_memberships.create!(user: user_factory)
+    end
+
+    context "non-collaborative group" do
+      before do
+        account = @course.account
+        account.tap do |a|
+          a.settings[:allow_assign_to_differentiation_tags] = { value: true }
+          a.save!
+        end
+        student1 = user_factory
+        diff_tag_category = @course.group_categories.create!(name: "Differentiation Tag Category", non_collaborative: true)
+        @diff_tag = @course.groups.create!(name: "Diff Tag 1", group_category: diff_tag_category, non_collaborative: true)
+        @dt_membership = @diff_tag.group_memberships.create(user: student1)
+
+        @da = assignment_model(course: @course)
+        diff_tag_override = assignment_override_model(assignment: @da)
+        diff_tag_override.set_type = "Group"
+        diff_tag_override.set_id = @diff_tag.id
+        diff_tag_override.save!
+        @da.update!(only_visible_to_overrides: true)
+      end
+
+      it "triggers a batch when membership is created" do
+        new_user = user_factory
+
+        expect(SubmissionLifecycleManager).not_to receive(:recompute)
+        expect(SubmissionLifecycleManager).to receive(:recompute_users_for_course).with(
+          new_user.id,
+          @course.id,
+          match_array([@da.id])
+        )
+
+        @diff_tag.group_memberships.create(user: new_user)
+      end
+
+      it "triggers a batch when membership is deleted" do
+        expect(SubmissionLifecycleManager).not_to receive(:recompute)
+        expect(SubmissionLifecycleManager).to receive(:recompute_users_for_course).with(
+          @dt_membership.user.id,
+          @course.id,
+          match_array([@da.id])
+        )
+        @dt_membership.destroy
+      end
+
+      it "clears cache for wiki pages with overrides when membership workflow_state changes" do
+        student = user_factory
+        wiki_page = @course.wiki_pages.create!(title: "Test Page")
+        wiki_page.assignment_overrides.create!(set: @diff_tag)
+
+        membership = @diff_tag.group_memberships.create(user: student, workflow_state: "invited")
+        original_updated_at = wiki_page.updated_at
+        membership.update!(workflow_state: "accepted")
+
+        expect(wiki_page.reload.updated_at).to be > original_updated_at
+      end
+
+      it "clears cache for discussion topics with overrides when membership workflow_state changes" do
+        student = user_factory
+        discussion_topic = @course.discussion_topics.create!(title: "Test Discussion")
+        discussion_topic.assignment_overrides.create!(set: @diff_tag)
+
+        membership = @diff_tag.group_memberships.create(user: student, workflow_state: "invited")
+        original_updated_at = discussion_topic.updated_at
+        membership.update!(workflow_state: "accepted")
+
+        expect(discussion_topic.reload.updated_at).to be > original_updated_at
+      end
+
+      it "handles multiple content types (assignments, wiki pages, discussion topics) in one update" do
+        student = user_factory
+        wiki_page = @course.wiki_pages.create!(title: "Test Page")
+        wiki_page.assignment_overrides.create!(set: @diff_tag)
+
+        discussion_topic = @course.discussion_topics.create!(title: "Test Discussion")
+        discussion_topic.assignment_overrides.create!(set: @diff_tag)
+
+        membership = @diff_tag.group_memberships.create(user: student, workflow_state: "invited")
+
+        original_wiki_updated_at = wiki_page.updated_at
+        original_discussion_updated_at = discussion_topic.updated_at
+
+        membership.update!(workflow_state: "accepted")
+
+        expect(wiki_page.reload.updated_at).to be > original_wiki_updated_at
+        expect(discussion_topic.reload.updated_at).to be > original_discussion_updated_at
+      end
+
+      it "does not clear cache when workflow_state does not change" do
+        student = user_factory
+        wiki_page = @course.wiki_pages.create!(title: "Test Page")
+        wiki_page.assignment_overrides.create!(set: @diff_tag)
+
+        membership = @diff_tag.group_memberships.create(user: student, workflow_state: "accepted")
+
+        expect(WikiPage).not_to receive(:where)
+        expect(DiscussionTopic).not_to receive(:where)
+        expect(SubmissionLifecycleManager).not_to receive(:recompute_users_for_course)
+
+        membership.save # No changes
+      end
+    end
+  end
+
+  it "runs due date updates for discussion assignments" do
+    group_discussion_assignment
+    @assignment.update_attribute(:only_visible_to_overrides, true)
+    @assignment.assignment_overrides.create!(set: @group1)
+    @student1 = student_in_course(course: @course, active_all: true).user
+    membership = @group1.add_user(@student1)
+    @topic.child_topic_for(@student1).reply_from(user: @student1, text: "sup")
+    sub = @assignment.submission_for_student(@student1)
+    expect(sub).to be_submitted
+    membership.destroy
+    expect(sub.reload).to be_deleted # no longer part of the group so the assignment no longer applies to them
+    membership.update_attribute(:workflow_state, "accepted")
+    expect(sub.reload).to be_submitted # back to the way it was
+  end
+
+  describe "root_account_id" do
+    let(:category) { course.group_categories.create!(name: "category 1") }
+    let(:course) { course_factory && @course }
+    let(:group) { category.groups.create!(context: course) }
+    let(:user) { user_model }
+
+    it "assigns it on save if it is not set" do
+      membership = group.group_memberships.create!(user:)
+      membership.root_account_id = nil
+
+      expect do
+        membership.save!
+      end.to change {
+        membership.root_account_id
+      }.from(nil).to(group.root_account_id)
+    end
+
+    it "preserves it on save if it was already set" do
+      membership = group.group_memberships.create!(user:)
+
+      expect(membership.group).not_to receive(:root_account_id)
+
+      expect do
+        membership.save!
+      end.not_to change {
+        GroupMembership.find(membership.id).root_account_id
+      }
+    end
+  end
+
+  describe "visibility cache invalidation" do
+    let(:course) { course_model }
+    let(:student) { user_model }
+    let(:group_category) { course.group_categories.create!(name: "Project Groups", non_collaborative: true) }
+    let(:group) { group_category.groups.create!(context: course) }
+
+    before do
+      course.account.settings[:allow_assign_to_differentiation_tags] = { value: true }
+      course.account.save!
+      course.enroll_student(student, enrollment_state: "active")
+    end
+
+    context "with non-collaborative group using assignment overrides" do
+      let(:discussion_topic) { course.discussion_topics.create!(title: "Group Discussion") }
+      let(:wiki_page) { course.wiki_pages.create!(title: "Group Page") }
+
+      before do
+        @discussion_override = discussion_topic.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+        @wiki_override = wiki_page.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+      end
+
+      it "invalidates discussion visibility cache when group membership changes" do
+        membership = group.group_memberships.create!(user: student)
+
+        allow(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to receive(:invalidate_cache)
+
+        membership.destroy
+
+        expect(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            discussion_topic_ids: [discussion_topic.id],
+            include_concluded: true
+          )
+        ).at_least(:once)
+
+        expect(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            discussion_topic_ids: [discussion_topic.id],
+            include_concluded: false
+          )
+        ).at_least(:once)
+      end
+
+      it "invalidates wiki page visibility cache when group membership changes" do
+        membership = group.group_memberships.create!(user: student)
+
+        allow(WikiPageVisibility::WikiPageVisibilityService).to receive(:invalidate_cache)
+
+        membership.destroy
+
+        expect(WikiPageVisibility::WikiPageVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            wiki_page_ids: [wiki_page.id],
+            include_concluded: true
+          )
+        ).at_least(:once)
+
+        expect(WikiPageVisibility::WikiPageVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            wiki_page_ids: [wiki_page.id],
+            include_concluded: false
+          )
+        ).at_least(:once)
+      end
+
+      it "invalidates quiz visibility cache when group membership changes" do
+        quiz = course.quizzes.create!(title: "Group Quiz", quiz_type: "assignment", workflow_state: "available")
+        quiz.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+        membership = group.group_memberships.create!(user: student)
+
+        allow(QuizVisibility::QuizVisibilityService).to receive(:invalidate_cache)
+
+        membership.destroy
+
+        expect(QuizVisibility::QuizVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            quiz_ids: [quiz.id],
+            include_concluded: true
+          )
+        ).at_least(:once)
+
+        expect(QuizVisibility::QuizVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            quiz_ids: [quiz.id],
+            include_concluded: false
+          )
+        ).at_least(:once)
+      end
+
+      it "invalidates module visibility cache when group membership changes" do
+        context_module = course.context_modules.create!(name: "Group Module", workflow_state: "active")
+        context_module.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+        membership = group.group_memberships.create!(user: student)
+
+        allow(ModuleVisibility::ModuleVisibilityService).to receive(:invalidate_cache)
+
+        membership.destroy
+
+        expect(ModuleVisibility::ModuleVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            context_module_ids: [context_module.id],
+            include_concluded: true
+          )
+        ).at_least(:once)
+
+        expect(ModuleVisibility::ModuleVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            context_module_ids: [context_module.id],
+            include_concluded: false
+          )
+        ).at_least(:once)
+      end
+
+      it "invalidates both caches when both wiki pages and discussions exist" do
+        membership = group.group_memberships.create!(user: student)
+
+        allow(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to receive(:invalidate_cache)
+        allow(WikiPageVisibility::WikiPageVisibilityService).to receive(:invalidate_cache)
+
+        membership.destroy
+
+        expect(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            discussion_topic_ids: [discussion_topic.id],
+            include_concluded: true
+          )
+        ).at_least(:once)
+
+        expect(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            discussion_topic_ids: [discussion_topic.id],
+            include_concluded: false
+          )
+        ).at_least(:once)
+
+        expect(WikiPageVisibility::WikiPageVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            wiki_page_ids: [wiki_page.id],
+            include_concluded: true
+          )
+        ).at_least(:once)
+
+        expect(WikiPageVisibility::WikiPageVisibilityService).to have_received(:invalidate_cache).with(
+          hash_including(
+            course_ids: [course.id],
+            user_ids: [student.id],
+            wiki_page_ids: [wiki_page.id],
+            include_concluded: false
+          )
+        ).at_least(:once)
+      end
+    end
+  end
+
+  describe ".invalidate_visibility_caches_for_group" do
+    let(:course) { course_factory(active_all: true) }
+    let(:student) { student_in_course(course:, active_all: true).user }
+    let(:student2) { student_in_course(course:, active_all: true).user }
+    let(:group_category) { course.group_categories.create!(name: "Category", non_collaborative: true) }
+    let(:group) { group_category.groups.create!(context: course) }
+
+    before do
+      course.account.settings[:allow_assign_to_differentiation_tags] = { value: true }
+      course.account.save!
+    end
+
+    it "invalidates module visibility cache for multiple users" do
+      context_module = course.context_modules.create!(name: "Group Module", workflow_state: "active")
+      context_module.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      allow(ModuleVisibility::ModuleVisibilityService).to receive(:invalidate_cache)
+
+      described_class.invalidate_visibility_caches_for_group(group, [student.id, student2.id])
+
+      expect(ModuleVisibility::ModuleVisibilityService).to have_received(:invalidate_cache).with(
+        hash_including(
+          course_ids: [course.id],
+          user_ids: [student.id],
+          context_module_ids: [context_module.id]
+        )
+      ).at_least(:once)
+
+      expect(ModuleVisibility::ModuleVisibilityService).to have_received(:invalidate_cache).with(
+        hash_including(
+          course_ids: [course.id],
+          user_ids: [student2.id],
+          context_module_ids: [context_module.id]
+        )
+      ).at_least(:once)
+    end
+
+    it "invalidates quiz visibility cache for multiple users" do
+      quiz = course.quizzes.create!(title: "Group Quiz", quiz_type: "assignment", workflow_state: "available")
+      quiz.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      allow(QuizVisibility::QuizVisibilityService).to receive(:invalidate_cache)
+
+      described_class.invalidate_visibility_caches_for_group(group, [student.id])
+
+      expect(QuizVisibility::QuizVisibilityService).to have_received(:invalidate_cache).with(
+        hash_including(
+          course_ids: [course.id],
+          user_ids: [student.id],
+          quiz_ids: [quiz.id]
+        )
+      ).at_least(:once)
+    end
+
+    it "does nothing for collaborative groups" do
+      collaborative_category = course.group_categories.create!(name: "Collaborative", non_collaborative: false)
+      collaborative_group = collaborative_category.groups.create!(context: course)
+
+      allow(ModuleVisibility::ModuleVisibilityService).to receive(:invalidate_cache)
+
+      described_class.invalidate_visibility_caches_for_group(collaborative_group, [student.id])
+
+      expect(ModuleVisibility::ModuleVisibilityService).not_to have_received(:invalidate_cache)
+    end
+
+    it "invalidates wiki page visibility cache" do
+      wiki_page = course.wiki_pages.create!(title: "Group Page", workflow_state: "active")
+      wiki_page.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      allow(WikiPageVisibility::WikiPageVisibilityService).to receive(:invalidate_cache)
+
+      described_class.invalidate_visibility_caches_for_group(group, [student.id])
+
+      expect(WikiPageVisibility::WikiPageVisibilityService).to have_received(:invalidate_cache).with(
+        hash_including(
+          course_ids: [course.id],
+          user_ids: [student.id],
+          wiki_page_ids: [wiki_page.id]
+        )
+      ).at_least(:once)
+    end
+
+    it "invalidates discussion topic visibility cache" do
+      discussion = course.discussion_topics.create!(title: "Group Discussion", workflow_state: "active")
+      discussion.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      allow(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to receive(:invalidate_cache)
+
+      described_class.invalidate_visibility_caches_for_group(group, [student.id])
+
+      expect(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to have_received(:invalidate_cache).with(
+        hash_including(
+          course_ids: [course.id],
+          user_ids: [student.id],
+          discussion_topic_ids: [discussion.id]
+        )
+      ).at_least(:once)
+    end
+
+    it "does nothing for non-course contexts" do
+      account = Account.default
+      account_group_category = account.group_categories.create!(name: "Account Category")
+      account_group = account_group_category.groups.create!(context: account)
+
+      allow(ModuleVisibility::ModuleVisibilityService).to receive(:invalidate_cache)
+
+      described_class.invalidate_visibility_caches_for_group(account_group, [student.id])
+
+      expect(ModuleVisibility::ModuleVisibilityService).not_to have_received(:invalidate_cache)
+    end
+
+    it "does nothing when user_ids is empty" do
+      context_module = course.context_modules.create!(name: "Group Module", workflow_state: "active")
+      context_module.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      allow(ModuleVisibility::ModuleVisibilityService).to receive(:invalidate_cache)
+
+      described_class.invalidate_visibility_caches_for_group(group, [])
+
+      expect(ModuleVisibility::ModuleVisibilityService).not_to have_received(:invalidate_cache)
+    end
+
+    it "invalidates cache with both include_concluded true and false" do
+      context_module = course.context_modules.create!(name: "Group Module", workflow_state: "active")
+      context_module.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      allow(ModuleVisibility::ModuleVisibilityService).to receive(:invalidate_cache)
+
+      described_class.invalidate_visibility_caches_for_group(group, [student.id])
+
+      expect(ModuleVisibility::ModuleVisibilityService).to have_received(:invalidate_cache).with(
+        hash_including(include_concluded: true)
+      ).at_least(:once)
+
+      expect(ModuleVisibility::ModuleVisibilityService).to have_received(:invalidate_cache).with(
+        hash_including(include_concluded: false)
+      ).at_least(:once)
+    end
+
+    it "invalidates multiple content types when they all have overrides" do
+      wiki_page = course.wiki_pages.create!(title: "Group Page", workflow_state: "active")
+      wiki_page.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      discussion = course.discussion_topics.create!(title: "Group Discussion", workflow_state: "active")
+      discussion.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      quiz = course.quizzes.create!(title: "Group Quiz", quiz_type: "assignment", workflow_state: "available")
+      quiz.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      context_module = course.context_modules.create!(name: "Group Module", workflow_state: "active")
+      context_module.assignment_overrides.create!(set_type: "Group", set_id: group.id)
+
+      allow(WikiPageVisibility::WikiPageVisibilityService).to receive(:invalidate_cache)
+      allow(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to receive(:invalidate_cache)
+      allow(QuizVisibility::QuizVisibilityService).to receive(:invalidate_cache)
+      allow(ModuleVisibility::ModuleVisibilityService).to receive(:invalidate_cache)
+
+      described_class.invalidate_visibility_caches_for_group(group, [student.id])
+
+      expect(WikiPageVisibility::WikiPageVisibilityService).to have_received(:invalidate_cache).at_least(:once)
+      expect(UngradedDiscussionVisibility::UngradedDiscussionVisibilityService).to have_received(:invalidate_cache).at_least(:once)
+      expect(QuizVisibility::QuizVisibilityService).to have_received(:invalidate_cache).at_least(:once)
+      expect(ModuleVisibility::ModuleVisibilityService).to have_received(:invalidate_cache).at_least(:once)
+    end
+  end
+end

@@ -1,0 +1,8 @@
+{
+  "name": "@canvas/top-navigation",
+  "private": true,
+  "version": "1.0.0",
+  "author": "neme",
+  "main": "./index.tsx",
+  "owner": "FOO"
+}

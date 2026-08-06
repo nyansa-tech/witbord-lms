@@ -1,0 +1,7 @@
+production:
+  bucket_name: <%= ENV.fetch('AWS_S3_BUCKET', 'witbord-files-prod') %>
+  access_key_id: <%= ENV['AWS_ACCESS_KEY_ID'] %>
+  secret_access_key: <%= ENV['AWS_SECRET_ACCESS_KEY'] %>
+  region: <%= ENV.fetch('AWS_REGION', 'af-south-1') %>
+  # When using an EC2 instance role, leave access keys blank in .env
+  # and ensure the instance profile can read/write the bucket.

@@ -1,0 +1,333 @@
+#!/usr/bin/env groovy
+
+/*
+ * Copyright (C) 2026 - present Instructure, Inc.
+ *
+ * This file is part of Canvas.
+ *
+ * Canvas is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU Affero General Public License as published by the Free
+ * Software Foundation, version 3 of the License.
+ *
+ * Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+ * A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU Affero General Public License along
+ * with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+library "canvas-builds-library@${env.CANVAS_BUILDS_REFSPEC}"
+loadLocalLibrary('local-lib', 'build/new-jenkins/library')
+
+commitMessageFlag.setDefaultValues(commitMessageFlagDefaults() + commitMessageFlagPrivateDefaults())
+
+@groovy.transform.Field
+def rspecqNodeTotal = 50
+@groovy.transform.Field
+def rspecqTargetTime = 240
+@groovy.transform.Field
+def summaryMessage = ''
+@groovy.transform.Field
+def crystalballColor = 'danger'
+@groovy.transform.Field
+def specUnique = []
+
+def computeTestCountNecessary() {
+  // Check skip-crystalball flag first, before attempting to copy artifacts
+  if (commitMessageFlag('skip-crystalball') as Boolean) {
+    summaryMessage = "Skip Crystalball Detected! - Running everything!\n"
+    crystalballColor = 'danger'
+    env.CRYSTALBALL_SPEC = '.'
+    return false
+  }
+
+  copyArtifacts filter: 'tmp/crystalball_spec_list.txt', projectName: "${env.UPSTREAM}", selector: upstream()
+  copyArtifacts filter: 'tmp/crystalball_map_version.txt', projectName: "${env.UPSTREAM}", selector: upstream()
+
+  def specs = readFile(file: 'tmp/crystalball_spec_list.txt')
+  def mapVersion = readFile(file: 'tmp/crystalball_map_version.txt')
+  specUnique = specs.tokenize(',').unique()
+  env.CRYSTALBALL_SPEC = specUnique.join(' ')
+
+  summaryMessage = "Map: $mapVersion\n"
+
+  // Crystalball predictor returned empty text file
+  if (specUnique.size() == 0) {
+    summaryMessage += "Configuration Changes Detected! - Running everything!"
+    crystalballColor = 'danger'
+    env.CRYSTALBALL_SPEC = '.'
+    return false
+  }
+  // Crystalball predictor returned "."
+  if (specUnique.size() == 1 && specUnique[0] == '.') {
+    summaryMessage += "New File Detected! - Complete Suite Re-run!"
+    crystalballColor = 'danger'
+    env.CRYSTALBALL_SPEC = '.'
+    return false
+  }
+
+  return true
+}
+
+def computeTestCount() {
+  def nodeHardCap = rspecqNodeTotal
+
+  // Write spec paths one per line. xargs batches them into RPUSH calls of 100
+  // at a time, avoiding ARG_MAX while keeping the number of redis-cli invocations low.
+  def specListKey = "speclist_${env.BUILD_NUMBER}"
+  writeFile(file: 'build/new-jenkins/spec_list.txt', text: specUnique.join('\n'))
+
+  def timingsRaw = sh(script: """#!/usr/bin/env bash
+    set -e
+
+    docker run \\
+      -e TEST_QUEUE_HOST \\
+      -v \$(pwd)/build/new-jenkins/spec_list.txt:/spec_list.txt \\
+      -v \$(pwd)/build/new-jenkins/sumtimings.lua:/sumtimings.lua \\
+      --rm \\
+      948781806214.dkr.ecr.us-east-1.amazonaws.com/docker.io/library/redis:alpine /bin/sh -c '
+        redis-cli -h \$TEST_QUEUE_HOST -p 6379 DEL "${specListKey}" > /dev/null 2>&1
+        cat /spec_list.txt | xargs -n 100 redis-cli -h \$TEST_QUEUE_HOST -p 6379 RPUSH "${specListKey}" > /dev/null 2>&1
+        redis-cli -h \$TEST_QUEUE_HOST -p 6379 EXPIRE "${specListKey}" 3600 > /dev/null 2>&1
+        redis-cli --raw -h \$TEST_QUEUE_HOST -p 6379 --eval /sumtimings.lua "${specListKey}" timings ,
+        redis-cli -h \$TEST_QUEUE_HOST -p 6379 DEL "${specListKey}" > /dev/null 2>&1
+      '
+  """, returnStdout: true).trim()
+
+  def timingsBased = false
+
+  if (timingsRaw) {
+    try {
+      // Strip outer quotes that some redis-cli versions add around bulk string replies
+      def jsonText = (timingsRaw.startsWith('"') && timingsRaw.endsWith('"'))
+        ? timingsRaw[1..-2]
+        : timingsRaw
+      def timings = readJSON(text: jsonText)
+      def totalTime = timings.total_time as Double
+      def foundCount = timings.found_keys as Integer     // Redis keys — for time estimate
+      def foundEntries = timings.found_entries as Integer // spec entries — for coverage %
+      def missingSpecs = timings.missing.collect { it as String }
+      def coveragePct = (specUnique.size() > 0 ? (foundEntries * 100.0 / specUnique.size()) : 0) as Double
+
+      echo "=== Timing coverage: ${foundEntries}/${specUnique.size()} (${Math.round(coveragePct)}%), ${missingSpecs.size()} missing ==="
+      if (missingSpecs) {
+        def preview = missingSpecs.take(20)
+        def suffix = missingSpecs.size() > 20 ? " ... (${missingSpecs.size() - 20} more)" : ""
+        echo "=== No timing data for: ${preview.join(', ')}${suffix} ==="
+      }
+
+      if (coveragePct >= 50 && totalTime > 0) {
+        if (missingSpecs && foundCount > 0) {
+          def estimatedExtra = (totalTime / foundCount) * missingSpecs.size()
+          echo "=== Estimating ${Math.round(estimatedExtra)}s for ${missingSpecs.size()} untracked files ==="
+          totalTime += estimatedExtra
+        }
+
+        def bufferFactor = 1.15 // 15% buffer to account for variability and imperfect estimation
+        def newNodeTotal = (int) Math.ceil(totalTime * bufferFactor / (rspecqTargetTime * env.RSPEC_PROCESSES.toInteger()))
+        echo "=== Timing-based: ${Math.round(totalTime)}s → ${newNodeTotal} nodes ==="
+
+        crystalballColor = newNodeTotal > nodeHardCap ? 'warning' : 'good'
+        rspecqNodeTotal = Math.min(newNodeTotal, nodeHardCap)
+        summaryMessage += "${specUnique.size()} files using ${rspecqNodeTotal} nodes (timing-based)"
+        timingsBased = true
+      }
+    } catch (e) {
+      echo "=== Failed to parse timing result: ${e.message} ==="
+      echo "=== Timing raw: ${timingsRaw} ==="
+    }
+  }
+
+  if (!timingsBased) {
+    // No timing data, parse failure, or coverage < 50% — fall back to spec count via dry-run
+    echo "=== Timing coverage insufficient, falling back to dry-run ==="
+    try {
+      sh(script: 'build/new-jenkins/docker-compose-pull.sh', label: 'Pull Images')
+      sh(script: 'build/new-jenkins/docker-compose-build-up.sh', label: 'Start Containers')
+
+      sh(script: "docker compose exec -T canvas bundle exec rspec --dry-run \
+                                          --require './spec/formatters/node_count_formatter.rb' \
+                                          --format NodeCountRecorder \
+                                          --out formatter_out.txt --pattern ${specUnique.join(',')}", label: 'Get Node Count')
+
+      def rawResult = sh(script: 'docker compose exec -T canvas cat formatter_out.txt', returnStdout: true).trim()
+      def parts = rawResult.split(' ')
+      if (parts.size() < 2 || !parts[0].isInteger() || !parts[1].isInteger()) {
+        error("Unexpected formatter output: '${rawResult}'")
+      }
+      def nodeTotal = parts[0].toInteger()
+      def specTotal = parts[1].toInteger()
+
+      crystalballColor = nodeTotal > nodeHardCap ? 'warning' : 'good'
+      rspecqNodeTotal = Math.min(nodeTotal, nodeHardCap)
+      summaryMessage += "${specTotal} specs across ${specUnique.size()} files using ${rspecqNodeTotal} nodes (dry-run)"
+    } catch (e) {
+      echo "=== Dry-run failed: ${e.message} — using default node count (${rspecqNodeTotal}) ==="
+    }
+  }
+
+  echo "=== Prediction Summary ===\n${summaryMessage}\n${specUnique.join('\n')}"
+}
+
+def sendRspecqSlack(status) {
+  def jobInfo = ":alert: <$env.BUILD_URL|RspecQ Timings Build> ${status}! :alert:"
+  def message = "$jobInfo\nResolve this issue to prevent further build failures!"
+  slackSend channel: '#devx-alerts', color: 'danger', message: message
+}
+
+def sendCrystalballSlack(summary, color, status) {
+  def jobInfo = "<https://gerrit.instructure.com/$env.GERRIT_CHANGE_NUMBER|Gerrit> | <$env.BUILD_URL|Jenkins>: **$status!**"
+  def message = "$jobInfo\n$summary"
+  slackSend channel: '#crystalball-noisy', color: color, message: message
+}
+
+def sendCrystalballMetrics() {
+    def queueInfo = sh(script: "docker run -e TEST_QUEUE_HOST -t --rm 948781806214.dkr.ecr.us-east-1.amazonaws.com/docker.io/library/redis:alpine /bin/sh -c '\
+                                          redis-cli -h $TEST_QUEUE_HOST -p 6379 get ${JOB_NAME}_build${BUILD_NUMBER}:example_count;\
+                                          redis-cli -h $TEST_QUEUE_HOST -p 6379 get ${JOB_NAME}_build${BUILD_NUMBER}:build_time'", returnStdout: true).split('\n')
+    def exampleCount = queueInfo[0].replaceAll('"', '').trim()
+    def buildTime = queueInfo[1].replaceAll('"', '').trim()
+
+    reportBuildLog('rspecq_crystalball_data', [
+                    'node_count': rspecqNodeTotal,
+                    'example_count': exampleCount.toInteger(),
+                    'execution_time': buildTime.toInteger(),
+                    'result': currentBuild.currentResult,
+                    'upstream_tag': "${env.UPSTREAM_TAG}"])
+}
+
+def redisUrl() {
+  return "redis://${env.TEST_QUEUE_HOST}:6379"
+}
+
+env.REGISTRY_BASE = '948781806214.dkr.ecr.us-east-1.amazonaws.com/canvas-builds'
+env.COMPOSE_FILE = 'docker-compose.new-jenkins.yml:docker-compose.new-jenkins-selenium.yml'
+env.COMPOSE_PROJECT_NAME = 'test-queue'
+env.FORCE_FAILURE = commitMessageFlag("force-failure-rspec").asBooleanInteger()
+env.RERUNS_RETRY = commitMessageFlag('rspecq-max-requeues').asType(Integer)
+env.RSPEC_PROCESSES = commitMessageFlag('rspecq-processes').asType(Integer)
+env.RSPECQ_FILE_SPLIT_THRESHOLD = commitMessageFlag('rspecq-file-split-threshold').asType(Integer)
+env.RSPECQ_CHUNK_TARGET_DURATION = commitMessageFlag('rspecq-chunk-target-duration').asType(Integer)
+env.RSPECQ_WORKER_LIVENESS_SEC = commitMessageFlag('worker-liveness-sec').asType(Integer)
+env.RSPECQ_MAX_REQUEUES = commitMessageFlag('rspecq-max-requeues').asType(Integer)
+env.TEST_PATTERN = '^./(spec|gems/plugins/.*/spec_canvas)/'
+env.RSPECQ_UPDATE_TIMINGS = "${env.RSPECQ_UPDATE_TIMINGS}"
+env.ENABLE_AXE_SELENIUM = "${env.ENABLE_AXE_SELENIUM}"
+env.POSTGRES_PASSWORD = 'sekret'
+env.RSPECQ_REDIS_URL = redisUrl()
+
+node(nodeLabel()) {
+  timeout(time: 60, unit: 'MINUTES') {
+    ansiColor('xterm') {
+      timestamps {
+        def buildFailed = false
+        try {
+          stage('Clean Workspace') {
+            pipelineHelpers.cleanupWorkspace()
+          }
+
+          stage('Checkout Code') {
+            env.CRYSTALBALL_SPEC = '.'
+            sh 'rm -vrf ./tmp'
+            def refspecToCheckout = env.GERRIT_PROJECT == 'canvas-lms' ? env.GERRIT_REFSPEC : env.CANVAS_LMS_REFSPEC
+            checkoutFromGit(gerritProjectUrl('canvas-lms'), refspec: refspecToCheckout, depth: 1)
+            distribution.stashBuildScripts()
+          }
+
+          stage('Setup') {
+            rspecStage.setupNode()
+          }
+
+          if (!configuration.isChangeMerged() && env.GERRIT_REFSPEC != "refs/heads/master" && env.ENABLE_CRYSTALBALL == '1' && computeTestCountNecessary()) {
+            stage('Compute Build Distribution') {
+              computeTestCount()
+            }
+          }
+
+          stage('Run Tests') {
+            def rspecqStages = [:]
+
+            rspecqStages['Reporter'] = {
+              try {
+                sh(script: "docker run -e SENTRY_DSN -e RSPECQ_REDIS_URL -t \$PATCHSET_TAG bundle exec rspecq \
+                  --build=${env.JOB_NAME}_build${env.BUILD_NUMBER} \
+                  --queue-wait-timeout 120 \
+                  --redis-url \$RSPECQ_REDIS_URL \
+                  --report", label: 'Reporter')
+              } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
+                if (e.causes[0] instanceof org.jenkinsci.plugins.workflow.steps.TimeoutStepExecution.ExceededTimeout) {
+                  sh '''#!/bin/bash
+                    ids=($(docker ps -aq --filter "name=canvas-"))
+                    for i in "${ids[@]}"
+                      do
+                        docker exec $i bash -c "cat /usr/src/app/log/cmd_output/*.log"
+                    done
+                  '''
+                }
+                throw e
+              }
+            }
+
+            // Set 00 runs on main coordinator node
+            rspecqStages["RSpecQ 00"] = {
+              withEnv([
+                "CI_NODE_INDEX=00",
+                "CRYSTAL_BALL_SPECS=${env.CRYSTALBALL_SPEC}",
+                "BUILD_NAME=${env.JOB_NAME}_build${env.BUILD_NUMBER}"
+              ]) {
+                def stageStartTime = System.currentTimeMillis()
+                try {
+                  stage('00 Run Tests') {
+                    catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                      rspecStage.runRspecqSuite()
+                    }
+                  }
+
+                  stage('00 Collect Results') {
+                    rspecStage.tearDownNode()
+                  }
+                } finally {
+                  buildSummaryReport.trackStage('RSpecQ Set 00', stageStartTime)
+                }
+              }
+            }
+
+            // Remaining nodes (index 1 through rspecqNodeTotal-1)
+            for (int i = 1; i < rspecqNodeTotal; i++) {
+              def indexStr = String.format('%02d', i)
+              rspecqStages["RSpecQ ${indexStr}"] = {
+                rspecStage.runRspecQWorkerNode(indexStr, ["CRYSTAL_BALL_SPECS=${env.CRYSTALBALL_SPEC}"])
+              }
+            }
+
+            parallel(rspecqStages)
+          }
+        } catch (e) {
+          // currentBuild.currentResult is not updated until after the finally
+          // block completes, so it reads SUCCESS even on failure. Capture the
+          // failure here so the finally block can report the correct status.
+          buildFailed = true
+          throw e
+        } finally {
+          build(job: '/Canvas/helpers/junit-uploader', parameters: [
+            string(name: 'GERRIT_REFSPEC', value: "${env.GERRIT_REFSPEC}"),
+            string(name: 'SOURCE', value: "${env.JOB_NAME}/${env.BUILD_NUMBER}"),
+          ], propagate: false, wait: false)
+
+          def buildResult = buildFailed ? 'FAILURE' : currentBuild.currentResult
+          pipelineHelpers.cleanupDocker()
+          if (!configuration.isChangeMerged() && env.GERRIT_REFSPEC != "refs/heads/master" && env.ENABLE_CRYSTALBALL == '1') {
+            sendCrystalballSlack(summaryMessage, crystalballColor, buildResult)
+            sendCrystalballMetrics()
+          }
+          if ((buildFailed || currentBuild.currentResult != 'SUCCESS') && env.RSPECQ_UPDATE_TIMINGS == '1') {
+            sendRspecqSlack(buildResult)
+          }
+          buildSummaryReport.saveRunManifest()
+        }
+      }
+    }
+  }
+}

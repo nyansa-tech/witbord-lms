@@ -1,0 +1,10 @@
+# it is intended that this be used exclusive of all other docker-compose.*yml files in CI
+services:
+  canvas:
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/canvas_test
+    init: true
+
+  redis:
+    image: 948781806214.dkr.ecr.us-east-1.amazonaws.com/docker.io/library/redis:alpine
+    init: true

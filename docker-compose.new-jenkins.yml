@@ -1,0 +1,58 @@
+# it is intended that this be used exclusive of all other docker-compose.*yml files in CI
+services:
+  canvas:
+    image: $PATCHSET_TAG
+    depends_on:
+      - postgres
+      - redis
+      - dynamodb
+    environment:
+      DB_VALIDITY_ENSURED: 1
+      ENCRYPTION_KEY: facdd3a131ddd8988b14f6e4e01039c93cfa0160
+      RAILS_ENV: test
+      POSTGRES_PASSWORD: $POSTGRES_PASSWORD
+      RANDOMIZE_SEQUENCES: 1
+      DISABLE_SPRING: 'true'
+      RERUNS_RETRY:
+      COVERAGE:
+      FORCE_FAILURE:
+      TEST_CACHE_CLASSES:
+
+      # parallel_tests
+      CI_NODE_TOTAL:
+      CI_NODE_INDEX:
+      RSPEC_PROCESSES:
+      EXCLUDE_TESTS:
+      TEST_PATTERN:
+
+      # rspecq
+      RSPECQ_REDIS_URL:
+      RSPECQ_FILE_SPLIT_THRESHOLD:
+      RSPECQ_MAX_REQUEUES:
+      RSPECQ_WORKER_LIVENESS_SEC:
+      RSPECQ_CHUNK_TARGET_DURATION:
+
+      # rspec-parallel-log build
+      RSPEC_LOG:
+    # this will stop passenger from booting so the container isn't running anything at all once up
+    command: sleep infinity
+    init: true
+    # Cap the web container so Docker OOM-kills it before the EC2 node dies.
+    # The node has 16 GiB; 6g here leaves headroom for the other containers and the OS.
+    mem_limit: 6g
+
+  redis:
+    image: 948781806214.dkr.ecr.us-east-1.amazonaws.com/docker.io/library/redis:alpine
+    init: true
+
+  postgres:
+    image: $POSTGRES_IMAGE_TAG
+    environment:
+      PGDATA: /data
+      POSTGRES_PASSWORD: $POSTGRES_PASSWORD
+    init: true
+
+  dynamodb:
+    image: $DYNAMODB_IMAGE_TAG
+    command: -jar DynamoDBLocal.jar -sharedDb
+    init: true

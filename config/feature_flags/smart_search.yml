@@ -1,0 +1,8 @@
+---
+smart_search:
+  state: allowed
+  root_opt_in: true
+  applies_to: Course
+  display_name: IgniteAI Search for Courses
+  description: IgniteAI Search for Courses allows users to find course content quickly through context-aware, multilingual search results.
+  visible_on: tier_1_visible_on_hook

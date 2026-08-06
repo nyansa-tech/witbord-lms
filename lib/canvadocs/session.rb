@@ -1,0 +1,160 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2017 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+module Canvadocs
+  module Session
+    include CanvadocsHelper
+
+    # this expects the class to have submissions and attachment defined
+    def canvadocs_session_url(opts = {})
+      user = opts.delete(:user)
+      enable_annotations = opts.delete(:enable_annotations)
+      read_only = opts.delete(:read_only) || false
+      opts.reverse_merge! canvadoc_permissions_for_user(user, enable_annotations, read_only:)
+      opts[:url] = attachment.public_url(expires_in: 7.days)
+      opts[:locale] = I18n.locale || I18n.default_locale
+      opts[:send_usage_metrics] = user.account.feature_enabled?(:send_usage_metrics) if user
+      opts[:is_launch_token] = Account.site_admin.feature_enabled?(:enhanced_docviewer_url_security)
+
+      Canvas.timeout_protection("canvadocs", raise_on_timeout: true) do
+        session = canvadocs_api.session(document_id, StringifyIds.recursively_stringify_ids(opts))
+        process_session_token(session["id"])
+        canvadocs_api.view(session["id"])
+      end
+    end
+
+    def canvadocs_api
+      @canvadocs_api ||= Canvadoc.canvadocs_api
+    end
+    private :canvadocs_api
+
+    def process_session_token(token)
+      claims = JSON::JWT.decode(token, :skip_verification)
+
+      return unless claims["w"]
+      return if attachment.word_count
+
+      attachment.update(word_count: claims["w"])
+    rescue => e
+      # We don't want to block the session flow even if we can not process the token
+      Rails.logger.error("Failed to process token: #{token} Exception: #{e}")
+    end
+    private :process_session_token
+
+    def canvadoc_permissions_for_user(user, enable_annotations, read_only: false)
+      return {} unless enable_annotations && canvadocs_can_annotate?(user)
+
+      opts = canvadocs_default_options_for_user(user, read_only)
+      return opts if submissions.empty?
+
+      if submissions.any? { |s| s.user_can_read_grade?(user) }
+        opts.delete :user_filter
+      end
+
+      # anonymous peer reviewers should be able to see student annotation assignments
+      # but they should never be allowed to make annotations
+      submissions.each do |submission|
+        # don't change permissions for submissions by the current user
+        next unless submission.user_id != user.id
+
+        # only modify permissions for anonymous peer reviews
+        assignment = submission.assignment
+        next unless assignment.peer_reviews? && assignment.anonymous_peer_reviews?
+
+        # reviwers can only read the document
+        reviewers = submission.assessment_requests.pluck(:assessor_id)
+        if reviewers.any?(user.id)
+          opts[:permissions] = "read"
+          break
+        end
+      end
+
+      opts
+    end
+    private :canvadoc_permissions_for_user
+
+    def submission_context_ids
+      @submission_context_ids ||= submissions.map { |s| s.assignment.context_id }.uniq
+    end
+
+    def submission_shards
+      @submission_shards ||= submissions.map(&:shard).uniq
+    end
+
+    def observing?(user)
+      user.observer_enrollments
+          .active
+          .shard(submission_shards)
+          .where(course_id: submission_context_ids,
+                 associated_user_id: submissions.map(&:user_id))
+          .exists?
+    end
+
+    def managing?(user)
+      is_teacher = user.teacher_enrollments
+                       .active
+                       .shard(submission_shards)
+                       .where(course_id: submission_context_ids)
+                       .exists?
+      return true if is_teacher
+
+      course = submissions.first.assignment.course
+      course.account_membership_allows(user)
+    end
+    private :managing?
+
+    def canvadocs_can_annotate?(user)
+      user.present?
+    end
+    private :canvadocs_can_annotate?
+
+    def canvadocs_annotation_context
+      if ApplicationController.test_cluster?
+        return "default-#{ApplicationController.test_cluster_name}"
+      end
+
+      "default"
+    end
+    private :canvadocs_annotation_context
+
+    def canvadocs_permissions(user, read_only)
+      return "read" if read_only
+      return "readwrite" if submissions.empty?
+      return "readwritemanage" if managing?(user)
+      return "read" if observing?(user)
+
+      "readwrite"
+    end
+    private :canvadocs_permissions
+
+    def canvadocs_default_options_for_user(user, read_only)
+      opts = {
+        annotation_context: canvadocs_annotation_context,
+        permissions: canvadocs_permissions(user, read_only),
+        user_id: canvadocs_user_id(user),
+        user_name: canvadocs_user_name(user),
+        user_filter: canvadocs_user_id(user),
+      }
+      opts[:user_crocodoc_id] = user.crocodoc_id if user.crocodoc_id
+      opts
+    end
+    private :canvadocs_default_options_for_user
+  end
+end

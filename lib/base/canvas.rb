@@ -1,0 +1,436 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2011 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+
+module Canvas
+  # defines the behavior when a protected attribute is assigned to in mass
+  # assignment. The default, and Rails' normal behavior, is to just :log. Set
+  # this to :raise to raise an exception.
+  mattr_accessor :protected_attribute_error
+
+  def self.active_record_foreign_key_check(name, type, options)
+    if name.to_s.end_with?("_id") && type.to_s == "integer" && options[:limit].to_i < 8
+      raise ArgumentError, <<~TEXT
+        All foreign keys need to be at least 8-byte integers. #{name}
+        looks like a foreign key, please add this option: `:limit => 8`
+      TEXT
+    end
+  end
+
+  def self.redis
+    CanvasCache::Redis.redis
+  end
+
+  def self.redis_enabled?
+    CanvasCache::Redis.enabled?
+  end
+
+  def self.cache_store_config_for(cluster)
+    yaml_config = ConfigFile.load("cache_store", cluster)
+    consul_config = YAML.safe_load(DynamicSettings.find(tree: :private, cluster:)["cache_store.yml"] || "{}") || {}
+    consul_config = consul_config.with_indifferent_access if consul_config.is_a?(Hash)
+
+    consul_config.presence || yaml_config
+  end
+
+  # Load configuration from Consul with filesystem fallback
+  #
+  # @param config_name [String] The config file name (without .yml extension)
+  # @param cluster [String, nil] Cluster override for region-specific configs
+  # @param failsafe_cache [Boolean] Whether to enable filesystem fallback cache (default: false)
+  # @param default_ttl [ActiveSupport::Duration] Cache TTL for DynamicSettings (default: 5.minutes)
+  # @param fallback_to_filesystem [Boolean] Whether to fall back to ConfigFile.load (default: true)
+  # @return [Hash, nil] Configuration hash or nil if not found
+  #
+  # @example Basic usage
+  #   config = Canvas.load_config_from_consul("database")
+  #
+  # @example With cluster override
+  #   config = Canvas.load_config_from_consul("cache_store", cluster: "cluster21")
+  #
+  # @example With filesystem fallback for critical configs
+  #   config = Canvas.load_config_from_consul("redis", failsafe_cache: true)
+  #
+  # @example Consul only (no filesystem fallback)
+  #   config = Canvas.load_config_from_consul("new_feature", fallback_to_filesystem: false)
+  #
+  def self.load_config_from_consul(config_name, cluster: nil, failsafe_cache: false, default_ttl: 5.minutes, fallback_to_filesystem: true)
+    failsafe_param = failsafe_cache ? Rails.root.join("config") : false
+
+    # Try Consul first
+    consul_config = begin
+      yaml_string = DynamicSettings.find(tree: :private, cluster:, default_ttl:)["#{config_name}.yml", failsafe_cache: failsafe_param]
+      YAML.safe_load(yaml_string || "{}") || {}
+    rescue => e
+      Rails.logger&.warn("Failed to load #{config_name} from Consul: #{e.message}")
+      {}
+    end
+
+    consul_config = consul_config.with_indifferent_access if consul_config.is_a?(Hash)
+
+    # Fall back to filesystem if Consul returned empty and fallback is enabled
+    if consul_config.blank? && fallback_to_filesystem
+      ConfigFile.load(config_name, Rails.env)
+    else
+      consul_config.presence
+    end
+  end
+
+  # Load configuration from Consul with no filesystem fallback
+  # Returns nil if config doesn't exist in Consul
+  #
+  # @param config_name [String] The config file name (without .yml extension)
+  # @param kwargs [Hash] Same keyword arguments as load_config_from_consul (except fallback_to_filesystem)
+  # @return [Hash, nil] Configuration hash or nil
+  #
+  # @example
+  #   config = Canvas.load_config_from_consul_only("new_quizzes")
+  #   if config.nil?
+  #     # Handle missing config
+  #   end
+  #
+  def self.load_config_from_consul_only(config_name, **)
+    load_config_from_consul(config_name, **, fallback_to_filesystem: false)
+  end
+
+  # Load configuration with filesystem (ConfigFile) priority, Consul fallback
+  #
+  # This is the preferred method for configs that need to be overridable
+  # via filesystem (e.g., in Kubernetes/trigger deployments) while still
+  # defaulting to Consul in standard deployments.
+  #
+  # Priority order:
+  #   1. ConfigFile.load (filesystem YAML)
+  #   2. Consul (DynamicSettings, no filesystem fallback to avoid double read)
+  #
+  # @param config_name [String] The config file name (without .yml extension)
+  # @param kwargs [Hash] Same keyword arguments as load_config_from_consul_only
+  # @return [Hash, nil] Configuration hash or nil if not found anywhere
+  #
+  # @example Basic usage
+  #   config = Canvas.load_config_file_or_consul("domain")
+  #
+  # @example With failsafe cache for critical configs
+  #   config = Canvas.load_config_file_or_consul("redis", failsafe_cache: true)
+  #
+  def self.load_config_file_or_consul(config_name, **)
+    ConfigFile.load(config_name) || load_config_from_consul_only(config_name, **)
+  end
+
+  # Fetches a set of related keys from a Consul subtree with failsafe_cache
+  # applied. Each returned value is YAML-parsed, so scalar files containing a
+  # bare `true`, `false`, or string come back as native Ruby types.
+  #
+  # When failsafe_cache is enabled, cached copies are written to
+  # config/<prefix>/<key>.cached, one file per key. The prefix subdirectory
+  # is created if it doesn't exist.
+  #
+  # @param prefix [String] Consul subtree prefix (e.g. "outgoing_mail")
+  # @param keys [Array<String>] Key names under that prefix
+  # @param tree [Symbol] Consul tree, defaults to :private
+  # @param failsafe_cache [Boolean] Whether to use on-disk failsafe caching
+  # @return [Hash<Symbol, Object>] parsed value per key (nil if absent)
+  #
+  # @example
+  #   Canvas.load_consul_subtree("outgoing_mail",
+  #     keys: %w[smtp.yml reply_to delivery_method reply_to_disabled])
+  #
+  def self.load_consul_subtree(prefix, keys:, tree: :private, failsafe_cache: true)
+    proxy = DynamicSettings.find(prefix, tree:, default_ttl: 5.minutes)
+    cache = false
+    if failsafe_cache
+      cache = Rails.root.join("config", prefix)
+      FileUtils.mkdir_p(cache)
+    end
+    keys.each_with_object({}) do |key, out|
+      raw = proxy[key, failsafe_cache: cache]
+      out[key.sub(/\.ya?ml\z/, "").to_sym] = raw.nil? ? nil : YAML.safe_load(raw)
+    end
+  end
+
+  def self.lookup_cache_store(config, cluster)
+    config = config.to_h.deep_symbolize_keys
+    cache_store = config.delete(:cache_store)&.to_sym || :null_store
+
+    # if cache and redis data are configured identically, we want to share connections
+    if cache_store == :redis_cache_store && config.except(:expires_in) == {} && cluster == Rails.env && Canvas.redis_enabled?
+      config = { redis: Canvas.redis }
+    end
+    if cache_store == :redis_cache_store
+      store = nil
+      config[:error_handler] = lambda do |method:, returning:, exception:| # rubocop:disable Lint/UnusedBlockArgument
+        redis_name = store.redis.respond_to?(:id) ? store.redis.id : cluster
+        if exception.cause.is_a?(RedisClient::CircuitBreaker::OpenCircuitError)
+          Rails.logger.warn("  [REDIS] Short circuiting due to recent redis failure (#{redis_name})")
+          next
+        end
+
+        Rails.logger.error("  [REDIS] Query failure #{exception.inspect} (#{redis_name})")
+        InstStatsd::Statsd.distributed_increment("redis.errors.all")
+        InstStatsd::Statsd.increment("redis.errors.#{InstStatsd::Statsd.escape(redis_name)}",
+                                     short_stat: "redis.errors",
+                                     tags: { redis_name: InstStatsd::Statsd.escape(redis_name) })
+        Canvas::Errors.capture(exception, { tags: { type: "redis" }, skip_setting_cache: true }, :warn)
+      end
+    end
+
+    store = ActiveSupport::Cache.lookup_store(cache_store, config)
+  end
+
+  # `sample` reports KB, not B
+  if File.directory?("/proc")
+    # linux w/ proc fs
+    LINUX_PAGE_SIZE = (size = `getconf PAGESIZE`.to_i
+                       (size > 0) ? size : 4096)
+    def self.sample_memory
+      s = File.read("/proc/#{Process.pid}/statm").to_i
+      s * LINUX_PAGE_SIZE / 1024
+    rescue
+      0
+    end
+  else
+    # generic unix solution
+    def self.sample_memory
+      if Rails.env.test?
+        0
+      else
+        # hmm this is actually resident set size, doesn't include swapped-to-disk
+        # memory.
+        `ps -o rss= -p #{Process.pid}`.to_i
+      end
+    end
+  end
+
+  def self.revision
+    return @revision if defined?(@revision)
+
+    @revision = if Rails.root.join("VERSION").file?
+                  Rails.root.join("VERSION").readlines.first.try(:strip)
+                else
+                  nil
+                end
+  end
+
+  def self.semver_revision
+    revision&.delete("-")
+  end
+
+  DEFAULT_RETRY_CALLBACK = lambda do |ex, tries, *|
+    Rails.logger.debug do
+      {
+        error_class: ex.class,
+        error_message: ex.message,
+        error_backtrace: ex.backtrace,
+        tries:,
+        message: "Retrying service call!"
+      }.to_json
+    end
+  end
+
+  DEFAULT_RETRIABLE_OPTIONS = {
+    intervals: [0.5, 4.5, 16.5],
+    on_retry: DEFAULT_RETRY_CALLBACK,
+  }.freeze
+  def self.retriable(opts = {}, &)
+    if opts[:on_retry]
+      original_callback = opts[:on_retry]
+      opts[:on_retry] = lambda do |*args|
+        original_callback.call(*args)
+        DEFAULT_RETRY_CALLBACK.call(*args)
+      end
+    end
+    options = DEFAULT_RETRIABLE_OPTIONS.merge(opts)
+    Retriable.retriable(options, &)
+  end
+
+  def self.installation_uuid
+    installation_uuid = Setting.get("installation_uuid", "")
+    if installation_uuid == ""
+      installation_uuid = SecureRandom.uuid
+      Setting.set("installation_uuid", installation_uuid)
+    end
+    installation_uuid
+  end
+
+  def self.timeout_protection_error_ttl(service_name)
+    (Setting.get("service_#{service_name}_error_ttl", nil) ||
+     Setting.get("service_generic_error_ttl", 1.minute.to_s)).to_i
+  end
+
+  def self.timeout_protection_method(service_name)
+    Setting.get("service_#{service_name}_timeout_protection_method", nil)
+  end
+
+  # protection against calling external services that could timeout or misbehave.
+  # we keep track of timeouts in redis, and if a given service times out more
+  # than X times before the redis key expires in Y seconds (reset on each
+  # failure), we stop even trying to contact the service until the Y seconds
+  # passes.
+  #
+  # if redis isn't enabled, we'll still apply the timeout, but we won't track failures.
+  #
+  # all the configurable params have service-specific Settings with fallback to
+  # generic Settings.
+  def self.timeout_protection(service_name, options = {}, &)
+    timeout = (Setting.get("service_#{service_name}_timeout", nil) || options[:fallback_timeout_length] || 15).to_f
+
+    exception_class = options[:exception_class]
+    cutoff = options[:cutoff]
+
+    if Canvas.redis_enabled?
+      if timeout_protection_method(service_name) == "percentage"
+        percent_short_circuit_timeout(Canvas.redis, service_name, timeout, exception_class, &)
+      else
+        short_circuit_timeout(Canvas.redis, service_name, timeout, exception_class, cutoff:, &)
+      end
+    else
+      Timeout.timeout(timeout, exception_class, &)
+    end
+  rescue TimeoutCutoff, Timeout::Error => e
+    log_message = if e.is_a?(TimeoutCutoff)
+                    "Skipping service call due to error count: #{service_name} #{e.error_count}"
+                  else
+                    "Timeout during service call: #{service_name}"
+                  end
+    Rails.logger.error(log_message)
+    Canvas::Errors.capture_exception(:service_timeout, e, :warn)
+    raise if options[:raise_on_timeout]
+
+    nil
+  end
+
+  def self.timeout_protection_cutoff(service_name)
+    (Setting.get("service_#{service_name}_cutoff", nil) ||
+     Setting.get("service_generic_cutoff", 3.to_s)).to_i
+  end
+
+  def self.short_circuit_timeout(redis, service_name, timeout, exception_class, cutoff: nil, &)
+    redis_key = "service:timeouts:#{service_name}:error_count"
+    cutoff ||= timeout_protection_cutoff(service_name)
+
+    error_count = redis.get(redis_key, failsafe: 0)
+    if error_count.to_i >= cutoff
+      raise TimeoutCutoff, error_count
+    end
+
+    begin
+      Timeout.timeout(timeout, exception_class, &)
+    rescue Timeout::Error
+      error_ttl = timeout_protection_error_ttl(service_name)
+      redis.pipelined(redis_key, failsafe: nil) do |pipeline|
+        pipeline.incrby(redis_key, 1)
+        pipeline.expire(redis_key, error_ttl)
+      end
+      raise
+    end
+  end
+
+  def self.timeout_protection_failure_rate_cutoff(service_name)
+    (Setting.get("service_#{service_name}_failure_rate_cutoff", nil) ||
+     Setting.get("service_generic_failure_rate_cutoff", ".2")).to_f
+  end
+
+  def self.timeout_protection_failure_counter_window(service_name)
+    (Setting.get("service_#{service_name}_counter_window", nil) ||
+     Setting.get("service_generic_counter_window", 60.to_s)).to_i
+  end
+
+  def self.timeout_protection_failure_min_samples(service_name)
+    (Setting.get("service_#{service_name}_min_samples", nil) ||
+     Setting.get("service_generic_min_samples", 100.to_s)).to_i
+  end
+
+  def self.percent_short_circuit_timeout(redis, service_name, timeout, exception_class, &)
+    redis_key = "service:timeouts:#{service_name}:percent_counter"
+    cutoff = timeout_protection_failure_rate_cutoff(service_name)
+
+    protection_activated_key = "#{redis_key}:protection_activated"
+    protection_activated = redis.get(protection_activated_key, failsafe: nil)
+    raise TimeoutCutoff, cutoff if protection_activated
+
+    counter_window = timeout_protection_failure_counter_window(service_name)
+    min_samples = timeout_protection_failure_min_samples(service_name)
+    counter = FailurePercentCounter.new(redis, redis_key, counter_window, min_samples)
+
+    failure_rate = counter.failure_rate
+    if failure_rate >= cutoff
+      # We add the key for timeout protection here, instead of in the
+      # error block below, because in a previous run, we could go over
+      # the minimum number of samples with a non-timedout call.  This
+      # has the added benefit of making the error block below much
+      # smaller.
+      error_ttl = timeout_protection_error_ttl(service_name)
+      redis.pipelined(protection_activated_key, failsafe: nil) do |pipeline|
+        pipeline.set(protection_activated_key, "true")
+        pipeline.expire(protection_activated_key, error_ttl)
+      end
+      raise TimeoutCutoff, failure_rate
+    end
+
+    begin
+      counter.increment_count
+      Timeout.timeout(timeout, exception_class, &)
+    rescue Timeout::Error
+      counter.increment_failure
+      raise
+    end
+  end
+
+  class TimeoutCutoff < Timeout::Error
+    attr_accessor :error_count
+
+    def initialize(error_count)
+      super()
+      @error_count = error_count
+    end
+  end
+
+  # these methods are expected to be empty
+  # for open source canvas, but are useful
+  # hooks for overriding in very large deployments
+  # of the lms.
+  def self.cluster
+    nil
+  end
+
+  def self.region
+    nil
+  end
+
+  def self.region_code(_region = nil)
+    nil
+  end
+
+  def self.availability_zone
+    nil
+  end
+
+  def self.environment
+    Rails.env
+  end
+
+  # for use in cases where you want to tie an action
+  # to the "current" user in situations like console invocation.
+  # As long as all authorized console users are provisioned with siteadmin
+  # pseudonyms that share their username, this will look up their associated user record.
+  # Otherwise it's still safe, it will just return a nil user.
+  def self.infer_user(username = nil)
+    unix_user = username || ENV["SUDO_USER"] || ENV["USER"]
+    Account.site_admin.pseudonyms.active.by_unique_id(unix_user).first&.user
+  end
+end

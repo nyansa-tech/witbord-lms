@@ -1,0 +1,56 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2016 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+
+# @API Brand Configs
+class BrandConfigsApiController < ApplicationController
+  skip_before_action :require_user, only: :show
+  before_action :require_context, only: [:show_context]
+
+  # @API Get the brand config variables that should be used for this domain
+  #
+  # Will redirect to a static json file that has all of the brand
+  # variables used by this account. Even though this is a redirect,
+  # do not store the redirected url since if the account makes any changes
+  # it will redirect to a new url. Needs no authentication.
+  #
+  # @example_request
+  #
+  #   curl 'https://<canvas>/api/v1/brand_variables'
+  def show
+    headers["Access-Control-Allow-Origin"] = "*"
+    redirect_to active_brand_config_url("json")
+  end
+
+  # @API Get the brand config variables for a sub-account or course
+  #
+  # Will redirect to a static json file that has all of the brand
+  # variables used by the provided context. Even though this is a redirect,
+  # do not store the redirected url since if the sub-account makes any changes
+  # it will redirect to a new url.
+  #
+  # @example_request
+  #
+  #   curl 'https://<canvas>/api/v1/accounts/123/brand_variables'
+  #     -H 'Authorization: Bearer <token>'
+  def show_context
+    return bad_request unless @context.is_a?(Account) || @context.is_a?(Course)
+
+    redirect_to active_brand_config_url("json")
+  end
+end

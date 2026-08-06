@@ -1,0 +1,284 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2019 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+module FeatureFlags
+  module Hooks
+    def self.final_grades_override_custom_transition_hook(_user, context, from_state, transitions)
+      transitions["off"] ||= {}
+      transitions["on"] ||= {}
+
+      # This is a "one-way" flag:
+      #  - Once Allowed, it can no longer be set to Off.
+      #  - Once On, it can no longer be Off nor Allowed.
+      case context
+      when Course
+        transitions["off"]["locked"] = true if from_state == "on" # lock off to enforce no take backs
+      when Account
+        transitions["allowed"] ||= {}
+        case from_state
+        when "allowed"
+          transitions["off"]["locked"] = true # lock off to enforce no take backs
+        when "on"
+          # lock both `off` and `allowed` to enforce no take backs
+          transitions["off"]["locked"] = true
+          transitions["allowed"]["locked"] = true
+        end
+      end
+    end
+
+    def self.use_semi_colon_field_separators_in_gradebook_exports_custom_transition_hook(_user, context, _from_state, transitions)
+      if context.feature_enabled?(:autodetect_field_separators_for_gradebook_exports)
+        transitions["on"] ||= {}
+        transitions["on"]["locked"] = true
+        transitions["on"]["warning"] = I18n.t("This feature can't be enabled while autodetection of field separators is enabled")
+      end
+    end
+
+    def self.autodetect_field_separators_for_gradebook_exports_custom_transition_hook(_user, context, _from_state, transitions)
+      if context.feature_enabled?(:use_semi_colon_field_separators_in_gradebook_exports)
+        transitions["on"] ||= {}
+        transitions["on"]["locked"] = true
+        transitions["on"]["warning"] = I18n.t("This feature can't be enabled while semicolons are forced to be field separators")
+      end
+    end
+
+    def self.project_lhotse_visible_on_hook(_context)
+      false
+    end
+
+    def self.tier_1_visible_on_hook(_context)
+      true
+    end
+
+    def self.tier_2_visible_on_hook(_context)
+      true
+    end
+
+    def self.tier_3_visible_on_hook(_context)
+      true
+    end
+
+    def self.quizzes_next_visible_on_hook(context)
+      root_account = context.root_account
+      # assume all Quizzes.Next provisions so far have been done through uuid_provisioner
+      #  so all provisioned accounts will have the FF in Canvas UI
+      root_account.settings&.dig(:provision, "lti").present?
+    end
+
+    def self.docviewer_enable_iwork_visible_on_hook(context)
+      @docviewer_enable_iwork_visible_on_hook_cache ||= {}
+
+      allowed = @docviewer_enable_iwork_visible_on_hook_cache[context.global_asset_string]
+      if allowed.nil?
+        allowed = DocviewerIworkPredicate.new(context, Shard.current.database_server.config[:region]).call
+        @docviewer_enable_iwork_visible_on_hook_cache[context.global_asset_string] = allowed
+      end
+      allowed
+    end
+
+    def self.usage_metrics_allowed_hook(context)
+      UsageMetricsPredicate.new(context, Shard.current.database_server.config[:region]).call
+    end
+
+    def self.analytics_2_after_state_change_hook(_user, context, _old_state, _new_state)
+      # if we clear the nav cache before HAStore clears, it can be recached with stale FF data
+      nav_cache = Lti::NavigationCache.new(context.root_account)
+      nav_cache.delay_if_production(run_at: 1.minute.from_now).invalidate_cache_key
+      nav_cache.delay_if_production(run_at: 5.minutes.from_now).invalidate_cache_key
+    end
+
+    def self.k6_theme_hook(_user, _context, _from_state, transitions)
+      transitions["on"] ||= {}
+      transitions["on"]["message"] =
+        I18n.t("Enabling the Elementary Theme will change the font in the Canvas interface and simplify " \
+               "the Course Navigation Menu for all users in your course.")
+      transitions["on"]["reload_page"] = true
+      transitions["off"] ||= {}
+      transitions["off"]["message"] =
+        I18n.t("Disabling the Elementary Theme will change the font in the Canvas interface for all users in your course.")
+      transitions["off"]["reload_page"] = true
+    end
+
+    def self.mastery_scales_after_change_hook(_user, context, _old_state, new_state)
+      if context.is_a?(Account) && OutcomesService::Service.enabled_in_context?(context)
+        OutcomesService::Service.delay_if_production(priority: Delayed::LOW_PRIORITY,
+                                                     n_strand: [
+                                                       "outcomes_service_toggle_context_proficiencies_feature_flag",
+                                                       context.global_root_account_id
+                                                     ])
+                                .toggle_feature_flag(
+                                  context.root_account,
+                                  "context_proficiencies",
+                                  new_state == "on"
+                                )
+      end
+    end
+
+    def self.archive_outcomes_after_change_hook(_user, context, _old_state, new_state)
+      # Get all root accounts that isn't the site admin account
+      root_accounts = Account.active.excluding(context).where(parent_account_id: nil)
+      # Filter out root accounts that aren't OS enabled
+      os_enabled_ras = root_accounts.select { |ra| OutcomesService::Service.enabled_in_context?(ra) }
+      os_enabled_ras.each do |account|
+        OutcomesService::Service.delay_if_production(priority: Delayed::LOW_PRIORITY,
+                                                     n_strand: [
+                                                       "outcomes_service_toggle_archive_outcomes_feature_flag",
+                                                       account.global_root_account_id
+                                                     ])
+                                .toggle_feature_flag(
+                                  account,
+                                  "archive_outcomes",
+                                  new_state == "on"
+                                )
+      end
+    end
+
+    def self.provision_ai_experience_after_change_hook(_user, context, _old_state, _new_state)
+      AiExperiences::Jobs::AiExperienceProvisionJob.delay(
+        run_at: 10.seconds.from_now,
+        singleton: "ai_experience_provision:#{context.uuid}",
+        on_conflict: :overwrite, # Ensures that job launches 10 seconds after final feature flag flip
+        max_attempts: 3
+      ).provision_account_for_ai_experiences(context)
+    end
+
+    def self.assignment_enhancements_prereq_for_stickers_hook(_user, context, _old_state, new_state)
+      return if context.feature_allowed?(:assignments_2_student)
+
+      new_state["on"] ||= {}
+      new_state["on"]["locked"] = true
+      new_state["on"]["warning"] = I18n.t("'Assignment Enhancements - Student' must first be enabled in order to enable 'Submission Stickers'")
+    end
+
+    def self.log_modernized_speedgrader_metrics(_user, context, _old_state, new_state)
+      state = if ["allowed_on", "on"].include? new_state
+                "enabled"
+              else
+                "disabled"
+              end
+      cxt = context.is_a?(Course) ? "course" : "account"
+      InstStatsd::Statsd.distributed_increment("speedgrader.modernized.flag.#{state}.#{cxt}")
+    end
+
+    def self.rollback_assignments_state(_user, context, _old_state, new_state)
+      if new_state == "off"
+        affected_states = ["outcome_alignment_cloning", "failed_to_clone_outcome_alignment"]
+        context.delay_if_production(
+          priority: Delayed::LOW_PRIORITY,
+          n_strand: ["rollback_assignment_states", context.global_id]
+        ).all_courses.find_ids_in_ranges do |start_id, end_id|
+          Assignment.where(workflow_state: affected_states, context_type: "Course")
+                    .where(context_id: start_id..end_id)
+                    .update_all(workflow_state: "unpublished")
+        end
+      end
+    end
+
+    def self.only_admins_can_enable_block_content_editor_during_eap(user, context, from_state, transitions)
+      only_admins_can_enable_during_eap(user, context, :block_content_editor, from_state, transitions)
+    end
+
+    def self.block_content_editor_flag_enabled(context)
+      shadow_flag_enabled?(context, :block_content_editor)
+    end
+
+    def self.a11y_checker_flag_enabled(context)
+      shadow_flag_enabled?(context, :a11y_checker)
+    end
+
+    def self.only_admins_can_enable_a11y_checker_during_eap(user, context, from_state, transitions)
+      only_admins_can_enable_during_eap(user, context, :a11y_checker, from_state, transitions, allow_subaccount_admins: true)
+    end
+
+    def self.oak_visible_on_hook(context)
+      return false unless tier_2_visible_on_hook(context)
+
+      OakPredicate.new(context, Shard.current.database_server.config[:region]).call
+    end
+
+    def self.oak_for_users_visible_on_hook(context)
+      return false unless context.is_a?(User)
+      return false unless Account.current_domain_root_account
+      return false unless oak_visible_on_hook(Account.current_domain_root_account)
+
+      Oak::PermissionChecker.user_permitted?(context, Account.current_domain_root_account)
+    end
+
+    def self.oak_for_teachers_visible_on_hook(context)
+      context.feature_enabled?(:oak_for_admins)
+    end
+
+    def self.study_assist_visible_on_hook(context)
+      context.feature_enabled?(:study_assist)
+    end
+
+    # Private helper methods
+
+    def self.shadow_flag_enabled?(context, flag_name)
+      return false unless context.is_a?(Account) || context.is_a?(Course)
+
+      if context.is_a?(Account)
+        context.feature_enabled?(flag_name)
+      else
+        context.account.feature_enabled?(flag_name)
+      end
+    end
+    private_class_method :shadow_flag_enabled?
+
+    def self.only_admins_can_enable_during_eap(user, context, flag_name, _from_state, transitions, allow_subaccount_admins: false)
+      flag_enabled = shadow_flag_enabled?(context, flag_name)
+
+      user_is_site_admin = Account.site_admin.grants_right?(user, :read)
+      user_is_root_admin = false
+      user_is_subaccount_admin = false
+
+      if context.is_a?(Course) || context.is_a?(Account)
+        user_is_root_admin = context.root_account.account_users.active.where(user_id: user&.id).exists?
+
+        if allow_subaccount_admins
+          account = context.is_a?(Account) ? context : context.account
+          user_is_subaccount_admin = account.account_users.active.where(user_id: user&.id).exists?
+        end
+      end
+
+      return if flag_enabled && (user_is_site_admin || user_is_root_admin || user_is_subaccount_admin)
+
+      transitions["on"] ||= {}
+      transitions["off"] ||= {}
+      transitions["allowed"] ||= {}
+      transitions["allowed_on"] ||= {}
+      transitions["on"]["locked"] = true
+      transitions["off"]["locked"] = true
+      transitions["allowed"]["locked"] = true
+      transitions["allowed_on"]["locked"] = true
+    end
+    private_class_method :only_admins_can_enable_during_eap
+
+    def self.sync_with_salesforce(_user, context, old_state, new_state)
+      return unless context.respond_to?(:sync_with_salesforce)
+
+      enabled_before = ["allowed_on", "on"].include?(old_state)
+      enabled_after = ["allowed_on", "on"].include?(new_state)
+      if enabled_before != enabled_after
+        context.sync_with_salesforce
+      end
+    end
+  end
+end

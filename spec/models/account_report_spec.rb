@@ -1,0 +1,168 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2021 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+describe AccountReport do
+  describe ".delete_old_rows_and_runners" do
+    let(:account) { account_model }
+    let(:admin) { user_model }
+
+    it "cleans up old db records" do
+      report = AccountReport.create!(account_id: account.id, user_id: admin.id)
+      arr = AccountReportRunner.create!(created_at: 60.days.ago, account_report_id: report.id)
+      a_row = AccountReportRow.create!(account_report_id: report.id, account_report_runner_id: arr.id, created_at: 60.days.ago)
+      AccountReport.delete_old_rows_and_runners
+      expect(AccountReportRunner.where(id: arr.id).count).to eq(0)
+      expect(AccountReportRow.where(id: a_row.id).count).to eq(0)
+    end
+
+    it "manages the edge of the delete window" do
+      report = AccountReport.create!(account_id: account.id, user_id: admin.id)
+      arr = AccountReportRunner.create!(created_at: 31.days.ago, account_report_id: report.id)
+      a_row = AccountReportRow.create!(account_report_id: report.id, account_report_runner_id: arr.id, created_at: 26.days.ago)
+      a_row_2 = AccountReportRow.create!(account_report_id: report.id, account_report_runner_id: arr.id, created_at: 31.days.ago)
+      AccountReport.delete_old_rows_and_runners
+      expect(AccountReportRunner.where(id: arr.id).count).to eq(1)
+      expect(AccountReportRow.where(id: a_row.id).count).to eq(1)
+      expect(AccountReportRow.where(id: a_row_2.id).count).to eq(0)
+    end
+  end
+
+  describe "stopping parallelized reports" do
+    before :once do
+      @account = account_model
+      @report = AccountReport.create!(account: @account, user: account_admin_user, workflow_state: "running")
+      @runners = [@report.account_report_runners.create!(workflow_state: "completed"),
+                  @report.account_report_runners.create!(workflow_state: "running"),
+                  @report.account_report_runners.create!(workflow_state: "created")]
+    end
+
+    it "aborts runners when errored" do
+      @report.mark_as_errored
+      expect(@runners.map { |r| r.reload.workflow_state }).to eq %w[completed aborted aborted]
+    end
+
+    it "aborts runners when deleted" do
+      @report.destroy
+      expect(@runners.map { |r| r.reload.workflow_state }).to eq %w[completed aborted aborted]
+    end
+
+    it "aborts runners when aborted" do
+      @report.update! workflow_state: "aborted"
+      expect(@runners.map { |r| r.reload.workflow_state }).to eq %w[completed aborted aborted]
+    end
+
+    it "leaves runners alone when completed" do
+      @report.update! workflow_state: "completed"
+      expect(@runners.map { |r| r.reload.workflow_state }).to eq %w[completed running created]
+    end
+  end
+
+  describe ".mark_as_errored" do
+    let(:account) { account_model }
+    let(:admin) { user_model }
+    let(:error_message) { "something went wrong" }
+
+    it "marks the report as errored" do
+      allow(Rails.logger).to receive(:error)
+      report = AccountReport.create!(account_id: account.id, user_id: admin.id)
+      report.mark_as_errored
+      expect(report.reload.workflow_state).to eq "error"
+      expect(Rails.logger).not_to have_received(:error)
+    end
+
+    it "logs the specified error message" do
+      allow(Rails.logger).to receive(:error)
+      report = AccountReport.create!(account_id: account.id, user_id: admin.id)
+      report.mark_as_errored(error_message)
+      expect(Rails.logger).to have_received(:error).with(/#{error_message}/)
+    end
+  end
+
+  describe ".last_reports" do
+    let_once(:account) { account_model }
+    let_once(:admin) { user_model }
+
+    it "preloads attachments with upload statuses" do
+      report_type = AccountReport.available_reports.keys.first
+      report = AccountReport.create!(account:, user: admin, report_type:, workflow_state: "complete")
+      report.create_attachment!(context: account, filename: "report.csv", content_type: "text/csv")
+
+      results = AccountReport.last_reports(account:)
+      returned = results[report_type]
+      expect(returned).to eq report
+      expect(returned.association(:attachment)).to be_loaded
+      expect(returned.attachment.association(:last_attachment_upload_status)).to be_loaded
+    end
+  end
+
+  describe ".last_complete_reports" do
+    let_once(:account) { account_model }
+    let_once(:admin) { user_model }
+
+    it "preloads attachments with upload statuses" do
+      report_type = AccountReport.available_reports.keys.first
+      report = AccountReport.create!(account:, user: admin, report_type:, workflow_state: "complete", progress: 100)
+      report.create_attachment!(context: account, filename: "report.csv", content_type: "text/csv")
+
+      results = AccountReport.last_complete_reports(account:)
+      returned = results[report_type]
+      expect(returned).to eq report
+      expect(returned.association(:attachment)).to be_loaded
+      expect(returned.attachment.association(:last_attachment_upload_status)).to be_loaded
+    end
+  end
+
+  describe ".recent_for" do
+    let(:account) { account_model }
+    let(:admin) { user_model }
+
+    it "returns nil when no recent report exists" do
+      expect(AccountReport.recent_for(account:, report_type: "no-such-report")).to be_nil
+    end
+
+    it "finds reports when parameters are provided" do
+      report = AccountReport.create!(account:, user: admin, report_type: "sis", workflow_state: "created", parameters: { "a" => "1" }, created_at: 1.hour.ago)
+      expect(AccountReport.recent_for(account:, report_type: "sis", parameters: { "a" => "1" })).to eq(report)
+    end
+
+    it "returns the most recent report based on created_at" do
+      older = AccountReport.create!(account:, user: admin, report_type: "sis", workflow_state: "created", created_at: 1.hour.ago)
+      newer = AccountReport.create!(account:, user: admin, report_type: "sis", workflow_state: "created", created_at: 30.minutes.ago)
+      expect(AccountReport.recent_for(account:, report_type: "sis")).to eq(newer)
+      expect(AccountReport.recent_for(account:, report_type: "sis")).not_to eq(older)
+    end
+
+    it "ignores reports not in created_or_running states" do
+      AccountReport.create!(account:, user: admin, report_type: "sis", workflow_state: "complete", created_at: 1.hour.ago)
+      recent = AccountReport.create!(account:, user: admin, report_type: "sis", workflow_state: "running", created_at: 30.minutes.ago)
+      expect(AccountReport.recent_for(account:, report_type: "sis")).to eq(recent)
+    end
+
+    it "respects the recent_account_report_window_hours setting" do
+      Setting.set("recent_account_report_window_hours", "1")
+      AccountReport.create!(account:, user: admin, report_type: "sis", workflow_state: "created", created_at: 2.hours.ago)
+      recent = AccountReport.create!(account:, user: admin, report_type: "sis", workflow_state: "created", created_at: 30.minutes.ago)
+      expect(AccountReport.recent_for(account:, report_type: "sis")).to eq(recent)
+
+      Setting.set("recent_account_report_window_hours", "0")
+      expect(AccountReport.recent_for(account:, report_type: "sis")).to be_nil
+    end
+  end
+end

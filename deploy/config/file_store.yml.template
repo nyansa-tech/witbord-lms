@@ -1,0 +1,5 @@
+production:
+  storage: s3
+
+development:
+  storage: local

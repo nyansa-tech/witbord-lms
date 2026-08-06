@@ -1,0 +1,203 @@
+/*
+ * Copyright (C) 2015 - present Instructure, Inc.
+ *
+ * This file is part of Canvas.
+ *
+ * Canvas is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU Affero General Public License as published by the Free
+ * Software Foundation, version 3 of the License.
+ *
+ * Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+ * A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU Affero General Public License along
+ * with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+@import "mixins/blue";
+
+$layout-modal-bg:                   $ic-color-light;
+$layout-modal-font-color:           $ic-font-color-dark;
+
+body {
+  min-height: 100vh;
+  background: $ic-color-light;
+  font-weight: 300;
+
+  &.no-headers, &.embedded {
+    #header, #mobile-header, #masquerade_bar, #topbar, #left-side, #breadcrumbs { display: none !important; }
+    .ic-app-nav-toggle-and-crumbs { display: none; }
+    #footer { display: none; }
+  }
+  &.hide-global-nav {
+    // Hide desktop header completely
+    #header { display: none !important; }
+
+    // On mobile, only hide the burger menu, keep the rest of mobile header
+    #mobile-header .mobile-header-hamburger { display: none !important; }
+  }
+  &.embedded {
+    #application {
+      height: 100%;
+    }
+    h2, .h2 {
+      @include ui-widget-header-bg-and-text;
+      @include fontSize($ic-font-size--small);
+      font-weight: bold;
+      margin: (-0.95em) -0.95em 1em;
+      padding: 0.4em 1em;
+      line-height: 20px;
+    }
+    &.no-headers {
+      h2, .h2 {
+        display: none;
+      }
+    }
+    #modal-box {
+      background: $layout-modal-bg !important;
+      color: $layout-modal-font-color !important;
+      height: auto !important;
+    }
+  }
+}
+
+// **********************************************************************************
+// all of the following are classes that should be applied to 'body' when appropriate
+
+.with-left-side {
+  #left-side {
+    display: block;
+    overflow: visible;
+    /* #main has a z-index: 10 on it. This is needed so that group set names will appear above the main content */
+    z-index: 11;
+  }
+}
+
+.with-right-side {
+  #right-side-wrapper {
+    display: block;
+  }
+}
+
+// **********************************************************************************
+// end classes applied to body
+
+#footer {
+  // Keep legacy selector so old compiled CSS doesn't leave an empty gap.
+  .footer-logo {
+    display: none !important;
+    background: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    margin: 0 !important;
+  }
+
+  .ic-app-footer__company-link {
+    display: inline-flex;
+    align-items: center;
+    margin: direction-sides(0 20px 0 0);
+    text-decoration: none;
+    color: var(--ic-brand-font-color-dark);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+}
+
+div.content_notice {
+  margin: 12px;
+  margin-bottom: 6px;
+  div {
+    display: inline-block;
+  }
+  i {
+    padding-#{direction(right)}: 8px;
+  }
+}
+
+.tool_content_wrapper.custom_height[style] {
+  height: 100% !important;
+}
+
+body.ic-full-screen-lti-tool iframe.tool_launch {
+  // gets the height of the parent element (div.tool_content_wrapper) which is calculated in
+  // ui/features/external_tools_show/jquery/tool_inline.js
+  min-height: 100%;
+}
+
+iframe.tool_launch {
+  min-height: 450px;
+  width: 100%;
+  height: 100%;
+  border: none;
+  max-width: 100%;
+
+  &.tool_launch_top_navigation {
+    display: block;
+  }
+}
+
+@media screen and (min-height: 451px) and (max-height: 600px) {
+  iframe.tool_launch#external_tool_button_frame {
+    min-height: 300px !important;
+  }
+}
+
+@media screen and (max-height: 450px) {
+  iframe.tool_launch#external_tool_button_frame {
+    min-height: 200px !important;
+  }
+}
+
+
+.lti_tool_icon {
+  margin-right: 0.25rem;
+  max-width: 1.2rem;
+ }
+
+.lti_tool_icon_large {
+  max-width: 3rem;
+ }
+
+#assignment_external_tools {
+  iframe.tool_launch {
+    display: block;
+  }
+  iframe.tool_launch:not(:first-of-type) {
+    margin-top: 10px;
+  }
+}
+
+#skip_navigation_link {
+  @include accessibility-prompt;
+  position: absolute;
+  #{direction(left)}: -10000px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  &:focus {
+    #{direction(left)}: 0;
+    top: 0;
+    width: auto;
+    height: auto;
+    z-index: 1;
+    outline: none;
+    & + .ic-app-header__main-navigation {
+      margin-top: 50px;
+    }
+  }
+}
+
+@include mobile-only {
+  #left-side, #header, .ic-app-nav-toggle-and-crumbs{
+    display: none !important;
+  }
+  .bcs__trigger{ display: none !important; }
+}
+
+

@@ -1,0 +1,6 @@
+services:
+  canvas:
+    image: local/karma-runner
+    command: cat
+    stdin_open: true
+    init: true

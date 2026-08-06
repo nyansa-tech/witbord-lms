@@ -1,0 +1,11 @@
+production:
+  encryption_key: <%= ENV.fetch('ENCRYPTION_KEY') %>
+  jwt_encryption_keys:
+    - <%= ENV.fetch('JWT_ENCRYPTION_KEY', ENV.fetch('ENCRYPTION_KEY')) %>
+  lti_iss: 'https://learn.witbord.com'
+
+development:
+  encryption_key: <%= ENV.fetch('ENCRYPTION_KEY') %>
+  jwt_encryption_keys:
+    - <%= ENV.fetch('JWT_ENCRYPTION_KEY', ENV.fetch('ENCRYPTION_KEY')) %>
+  lti_iss: 'https://learn.witbord.com'

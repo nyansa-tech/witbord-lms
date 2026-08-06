@@ -1,0 +1,715 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2015 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
+shared_examples "allow Quiz LTI placement when the correct Feature Flags are enabled" do
+  let(:available_section_tabs) do
+    SectionTabHelperSpec::AvailableSectionTabs.new(
+      context, current_user, domain_root_account, session
+    )
+  end
+
+  it "includes Quiz LTI placement if new_quizzes_account_course_level_item_banks and quizzes_next are enabled" do
+    Account.site_admin.enable_feature!(:new_quizzes_account_course_level_item_banks)
+    allow(context).to receive(:feature_enabled?).and_call_original
+    allow(context).to receive(:feature_enabled?).with(:quizzes_next).and_return(true)
+
+    expect(Account.site_admin.feature_enabled?(:new_quizzes_account_course_level_item_banks)).to be(true)
+    expect(context.feature_enabled?(:quizzes_next)).to be(true)
+    expect(quiz_lti_tool.quiz_lti?).to be(true)
+    expect(available_section_tabs.to_a.pluck(:id)).to include("context_external_tool_#{quiz_lti_tool.id}")
+  end
+
+  it "does not include Quiz LTI placement if new_quizzes_account_course_level_item_banks is not enabled" do
+    allow(context).to receive(:feature_enabled?).and_call_original
+    allow(context).to receive(:feature_enabled?).with(:quizzes_next).and_return(true)
+
+    expect(context.feature_enabled?(:quizzes_next)).to be(true)
+    expect(Account.site_admin.feature_enabled?(:new_quizzes_account_course_level_item_banks)).to be(false)
+    expect(quiz_lti_tool.quiz_lti?).to be(true)
+    expect(available_section_tabs.to_a.pluck(:id)).not_to include("context_external_tool_#{quiz_lti_tool.id}")
+  end
+
+  it "does not include Quiz LTI placement if next_quizzes is not enabled" do
+    Account.site_admin.enable_feature!(:new_quizzes_account_course_level_item_banks)
+
+    expect(Account.site_admin.feature_enabled?(:new_quizzes_account_course_level_item_banks)).to be(true)
+    expect(domain_root_account.feature_enabled?(:quizzes_next)).to be(false)
+    expect(quiz_lti_tool.quiz_lti?).to be(true)
+    expect(available_section_tabs.to_a.pluck(:id)).not_to include("context_external_tool_#{quiz_lti_tool.id}")
+  end
+end
+
+describe SectionTabHelper do
+  before do
+    stub_const("SectionTabHelperSpec", Class.new { include SectionTabHelper })
+  end
+
+  let_once(:course) { course_model }
+
+  describe "AvailableSectionTabs" do
+    let_once(:current_user) { course.users.first }
+    let_once(:domain_root_account) { LoadAccount.default_domain_root_account }
+    before do
+      user_session(current_user)
+    end
+
+    let_once(:quiz_lti_tool) do
+      ContextExternalTool.create!(
+        context: domain_root_account,
+        consumer_key: "key",
+        shared_secret: "secret",
+        name: "Quizzes 2",
+        tool_id: "Quizzes 2",
+        url: "http://www.tool.com/launch",
+        developer_key: DeveloperKey.create!,
+        root_account: domain_root_account
+      )
+    end
+
+    describe "#to_a" do
+      context "when context !tabs_available" do
+        let(:available_section_tabs) do
+          SectionTabHelperSpec::AvailableSectionTabs.new(
+            Object.new, current_user, domain_root_account, session
+          )
+        end
+
+        it "returns an empty array" do
+          a = available_section_tabs.to_a
+          expect(a).to be_a Array
+          expect(a).to be_empty
+        end
+      end
+
+      context "when context has tabs_available" do
+        let(:bad_tab) { { label: "bad tab" } }
+        before do
+          tabs = Course.default_tabs + [bad_tab]
+          allow(course).to receive(:tabs_available).and_return(tabs)
+        end
+
+        let(:available_section_tabs) do
+          SectionTabHelperSpec::AvailableSectionTabs.new(
+            course, current_user, domain_root_account, session
+          )
+        end
+
+        it "returns a non-empty array" do
+          expect(available_section_tabs.to_a).to be_a Array
+          expect(available_section_tabs.to_a).not_to be_empty
+        end
+
+        it "excludes tabs without label & href elements" do
+          expect(available_section_tabs.to_a).not_to include(bad_tab)
+        end
+
+        context "and SmartSearch is enabled" do
+          before do
+            allow(SmartSearch).to receive(:bedrock_client).and_return(double)
+            allow(course).to receive(:tabs_available).and_call_original
+            domain_root_account.set_feature_flag!(:smart_search, "on")
+            course.set_feature_flag!(:smart_search, "off")
+          end
+
+          let(:available_section_tabs) do
+            SectionTabHelperSpec::AvailableSectionTabs.new(
+              course, current_user, domain_root_account, session
+            )
+          end
+
+          it "uncaches tabs when smart search FF is updated" do
+            enable_cache do
+              expect(course).to receive(:tabs_available).twice.and_call_original
+              tabs_without_ss = available_section_tabs.to_a
+              smart_search_tab = tabs_without_ss.find { |tab| tab[:id] == Course::TAB_SEARCH }
+              expect(smart_search_tab).to be_nil
+              course.remove_instance_variable(:@tabs_available) if course.instance_variable_defined?(:@tabs_available)
+
+              course.set_feature_flag!(:smart_search, "on")
+              tabs_with_ss = available_section_tabs.to_a
+              smart_search_tab = tabs_with_ss.find { |tab| tab[:id] == Course::TAB_SEARCH }
+              expect(smart_search_tab).not_to be_nil
+            end
+          end
+        end
+
+        context "and new_quizzes_native_experience flag changes" do
+          before do
+            allow(course).to receive(:tabs_available).and_call_original
+            course.set_feature_flag!(:new_quizzes_native_experience, "off")
+          end
+
+          let(:available_section_tabs) do
+            SectionTabHelperSpec::AvailableSectionTabs.new(
+              course, current_user, domain_root_account, session
+            )
+          end
+
+          it "uncaches tabs when new_quizzes_native_experience FF is updated" do
+            enable_cache do
+              expect(course).to receive(:tabs_available).twice.and_call_original
+              available_section_tabs.to_a
+              course.remove_instance_variable(:@tabs_available) if course.instance_variable_defined?(:@tabs_available)
+
+              course.set_feature_flag!(:new_quizzes_native_experience, "on")
+              available_section_tabs.to_a
+            end
+          end
+        end
+
+        context "when context is an Account" do
+          let_once(:account) { Account.default }
+          let_once(:account_admin) { account_admin_user(account:) }
+
+          let(:available_section_tabs) do
+            SectionTabHelperSpec::AvailableSectionTabs.new(
+              account, account_admin, domain_root_account, session
+            )
+          end
+
+          before do
+            allow(account).to receive(:tabs_available).and_call_original
+          end
+
+          it "includes feature flag states in cache key for accounts" do
+            enable_cache do
+              expect(account).to receive(:tabs_available).twice.and_call_original
+              account.set_feature_flag!(:smart_search, "off")
+              available_section_tabs.to_a
+
+              account.set_feature_flag!(:smart_search, "on")
+              available_section_tabs.to_a
+            end
+          end
+        end
+
+        context "and YouTube Migration is available" do
+          before do
+            allow(course).to receive(:tabs_available).and_call_original
+            allow(course).to receive(:has_studio_integration?).and_return(true)
+            course.set_feature_flag!(:youtube_migration, "off")
+          end
+
+          let(:available_section_tabs) do
+            SectionTabHelperSpec::AvailableSectionTabs.new(
+              course, current_user, domain_root_account, session
+            )
+          end
+
+          it "uncaches tabs when youtube migration FF is updated" do
+            enable_cache do
+              expect(course).to receive(:tabs_available).twice.and_call_original
+              tabs_without_ym = available_section_tabs.to_a
+              youtube_migration_tab = tabs_without_ym.find { |tab| tab[:id] == Course::TAB_YOUTUBE_MIGRATION }
+              expect(youtube_migration_tab).to be_nil
+              course.remove_instance_variable(:@tabs_available) if course.instance_variable_defined?(:@tabs_available)
+
+              course.set_feature_flag!(:youtube_migration, "on")
+              tabs_with_ym = available_section_tabs.to_a
+              youtube_migration_tab = tabs_with_ym.find { |tab| tab[:id] == Course::TAB_YOUTUBE_MIGRATION }
+              expect(youtube_migration_tab).not_to be_nil
+            end
+          end
+        end
+
+        context "and Accessibility Checker is available" do
+          before do
+            allow(course).to receive(:tabs_available).and_call_original
+            account_admin_user_with_role_changes(role_changes: { manage_courses: true })
+          end
+
+          let(:available_section_tabs) do
+            SectionTabHelperSpec::AvailableSectionTabs.new(
+              course, current_user, course.account, session
+            )
+          end
+
+          it "uncaches tabs when a11y_checker account-level FF is updated" do
+            enable_cache do
+              expect(course).to receive(:tabs_available).twice.and_call_original
+              course.account.disable_feature!(:a11y_checker)
+              course.set_feature_flag!(:a11y_checker_eap, "on")
+
+              tabs_without_a11y = available_section_tabs.to_a
+              a11y_tab = tabs_without_a11y.find { |tab| tab[:id] == Course::TAB_ACCESSIBILITY }
+              expect(a11y_tab).to be_nil
+              course.remove_instance_variable(:@tabs_available) if course.instance_variable_defined?(:@tabs_available)
+
+              course.account.enable_feature!(:a11y_checker)
+              tabs_with_a11y = available_section_tabs.to_a
+              a11y_tab = tabs_with_a11y.find { |tab| tab[:id] == Course::TAB_ACCESSIBILITY }
+              expect(a11y_tab).not_to be_nil
+            end
+          end
+
+          it "uncaches tabs when a11y_checker_eap course-level FF is updated" do
+            enable_cache do
+              expect(course).to receive(:tabs_available).twice.and_call_original
+              course.account.enable_feature!(:a11y_checker)
+              course.set_feature_flag!(:a11y_checker_eap, "off")
+
+              tabs_without_a11y = available_section_tabs.to_a
+              a11y_tab = tabs_without_a11y.find { |tab| tab[:id] == Course::TAB_ACCESSIBILITY }
+              expect(a11y_tab).to be_nil
+              course.remove_instance_variable(:@tabs_available) if course.instance_variable_defined?(:@tabs_available)
+
+              course.set_feature_flag!(:a11y_checker_eap, "on")
+              tabs_with_a11y = available_section_tabs.to_a
+              a11y_tab = tabs_with_a11y.find { |tab| tab[:id] == Course::TAB_ACCESSIBILITY }
+              expect(a11y_tab).not_to be_nil
+            end
+          end
+        end
+
+        context "and tabs include TAB_CONFERENCES" do
+          it "includes TAB_CONFERENCES if WebConference.config" do
+            allow(WebConference).to receive(:config).and_return({})
+            expect(available_section_tabs.to_a.pluck(:id)).to include(Course::TAB_CONFERENCES)
+          end
+
+          it "does not include TAB_CONFERENCES if !WebConference.config" do
+            expect(available_section_tabs.to_a.pluck(:id)).not_to include(Course::TAB_CONFERENCES)
+          end
+        end
+
+        context "template course" do
+          let_once(:template_current_user) { account_admin_user }
+          let_once(:template_course) { Course.create!(account: domain_root_account, template: true) }
+          let(:tabs_available) do
+            SectionTabHelperSpec::AvailableSectionTabs.new(
+              template_course, template_current_user, domain_root_account, session
+            )
+          end
+
+          it "does not include TAB_PEOPLE if template?" do
+            template_course.update!(template: true)
+            expect(tabs_available.to_a.pluck(:id)).not_to include(Course::TAB_PEOPLE)
+          end
+        end
+
+        context "and tabs include TAB_COLLABORATIONS" do
+          it "includes TAB_COLLABORATIONS if Collaboration.any_collaborations_configured?" do
+            allow(Collaboration).to receive(:any_collaborations_configured?).and_return(true)
+            expect(available_section_tabs.to_a.pluck(:id)).to include(Course::TAB_COLLABORATIONS)
+          end
+
+          it "does not include TAB_COLLABORATIONS if !Collaboration.any_collaborations_configured?" do
+            expect(available_section_tabs.to_a.pluck(:id)).not_to include(Course::TAB_COLLABORATIONS)
+          end
+
+          it "does not include TAB_COLLABORATIONS when new_collaborations feature flag has been enabled" do
+            domain_root_account.set_feature_flag!(:new_collaborations, "on")
+            allow(Collaboration).to receive(:any_collaborations_configured?).and_return(true)
+            expect(available_section_tabs.to_a.pluck(:id)).not_to include(Course::TAB_COLLABORATIONS)
+          end
+        end
+
+        context "and tabs include TAB_COLLABORATIONS_NEW" do
+          it "includes TAB_COLLABORATIONS_NEW if new_collaborations feature flag has been enabled" do
+            domain_root_account.set_feature_flag!(:new_collaborations, "on")
+            expect(available_section_tabs.to_a.pluck(:id)).to include(Course::TAB_COLLABORATIONS_NEW)
+            domain_root_account.set_feature_flag!(:new_collaborations, "off")
+          end
+
+          it "does not include TAB_COLLABORATIONS if new_collaborations feature flas has been disabled" do
+            domain_root_account.set_feature_flag!(:new_collaborations, "off")
+            expect(available_section_tabs.to_a.pluck(:id)).not_to include(Course::TAB_COLLABORATIONS_NEW)
+          end
+        end
+
+        context "the root account has an account_navigation Quiz LTI placement and @context is an Account" do
+          let_once(:context) { domain_root_account }
+
+          before do
+            tabs = [
+              {
+                id: "context_external_tool_#{quiz_lti_tool.id}",
+                label: "Quizzes 2",
+                css_class: "context_external_tool_#{quiz_lti_tool.id}",
+                visibility: nil,
+                href: :account_external_tool_path,
+                external: true,
+                hidden: false,
+                args: [context.id, quiz_lti_tool.id]
+              },
+              {
+                id: 9,
+                label: "Settings",
+                css_class: "settings",
+                href: :account_settings_path
+              }
+            ]
+            allow(context).to receive(:tabs_available).and_return(tabs)
+          end
+
+          it_behaves_like "allow Quiz LTI placement when the correct Feature Flags are enabled"
+        end
+
+        context "the root account has a course_navigation Quiz LTI placement and @context is a Course" do
+          let_once(:context) { course }
+
+          before do
+            course_placement = {
+              id: "context_external_tool_#{quiz_lti_tool.id}",
+              label: "Item Banks",
+              css_class: "context_external_tool_#{quiz_lti_tool.id}",
+              visibility: nil,
+              href: :course_external_tool_path,
+              external: true,
+              hidden: false,
+              args: [context.id, quiz_lti_tool.id]
+            }
+            tabs = Course.default_tabs + [course_placement]
+            allow(context).to receive(:tabs_available).and_return(tabs)
+          end
+
+          it_behaves_like "allow Quiz LTI placement when the correct Feature Flags are enabled"
+        end
+
+        context "the root account has non-Quiz_LTI navigation placements" do
+          before do
+            non_quiz_lti_course_placement = {
+              id: "context_external_tool_0",
+              label: "Other LTI",
+              css_class: "context_external_tool_0",
+              visibility: nil,
+              href: :some_path,
+              external: true,
+              hidden: false,
+              args: [course.id, 0]
+            }
+            tabs = Course.default_tabs + [non_quiz_lti_course_placement]
+            allow(course).to receive(:tabs_available).and_return(tabs)
+          end
+
+          let(:available_section_tabs) do
+            SectionTabHelperSpec::AvailableSectionTabs.new(
+              course, current_user, domain_root_account, session
+            )
+          end
+
+          it "includes non-Quiz_LTI placement ignoring quizzes FFs" do
+            expect(Account.site_admin.feature_enabled?(:new_quizzes_account_course_level_item_banks)).to be(false)
+            expect(domain_root_account.feature_enabled?(:quizzes_next)).to be(false)
+            expect(available_section_tabs.to_a.pluck(:id)).to include("context_external_tool_0")
+          end
+        end
+
+        context "and tabs include TAB_FILES" do
+          let(:available_section_tabs) do
+            SectionTabHelperSpec::AvailableSectionTabs.new(
+              course, @student, domain_root_account, session
+            )
+          end
+
+          before do
+            course_with_student({ course: @course })
+            allow(course).to receive(:tabs_available).and_return(Course.default_tabs)
+          end
+
+          it "includes TAB_FILES if limited access for students is disabled on account" do
+            expect(available_section_tabs.to_a.pluck(:id)).to include(Course::TAB_FILES)
+          end
+
+          it "includes TAB_FILES if limited access for students is enabled on account and context is not a Course" do
+            available_section_tabs = SectionTabHelperSpec::AvailableSectionTabs.new(
+              domain_root_account, account_admin_user, domain_root_account, session
+            )
+            expect(available_section_tabs.to_a.pluck(:id)).to include(Course::TAB_FILES)
+          end
+
+          it "does not include TAB_FILES if limited access for students is enabled on account and context is a Course" do
+            course.account.root_account.enable_feature!(:allow_limited_access_for_students)
+            course.account.settings[:enable_limited_access_for_students] = true
+            course.account.save!
+            expect(available_section_tabs.to_a.pluck(:id)).not_to include(Course::TAB_FILES)
+          end
+        end
+      end
+    end
+  end
+
+  describe "SectionTabTag" do
+    # has screenreader
+    let_once(:tab_assignments) do
+      Course.default_tabs.find do |tab|
+        tab[:id] == Course::TAB_ASSIGNMENTS
+      end
+    end
+    # does not have screenreader
+    let_once(:tab_pages) do
+      Course.default_tabs.find do |tab|
+        tab[:id] == Course::TAB_PAGES
+      end
+    end
+    let(:new_window_tab) do
+      {
+        id: 1,
+        label: "my_tab",
+        css_class: "my_class",
+        href: :course_external_tool_path,
+        external: true,
+        target: "_blank",
+        args: [1, 1]
+      }
+    end
+
+    describe "#a_classes" do
+      it "is an array including tab css_class" do
+        tag = SectionTabHelperSpec::SectionTabTag.new(
+          tab_assignments, course
+        )
+        expect(tag.a_classes).to be_a Array
+        expect(tag.a_classes).to include tab_assignments[:css_class]
+        expect(tag.a_classes).not_to include "active"
+      end
+
+      it "includes `active` class if tab is active" do
+        tag = SectionTabHelperSpec::SectionTabTag.new(
+          tab_assignments, course, tab_assignments[:css_class]
+        )
+
+        expect(tag.a_classes).to include "active"
+      end
+    end
+
+    describe "#a_attributes" do
+      it "includes keys href & class" do
+        tag = SectionTabHelperSpec::SectionTabTag.new(
+          tab_pages, course
+        )
+
+        expect(tag.a_attributes.keys).to include(:href, :class)
+      end
+
+      it "includes a target if tab has the target attribute" do
+        tag = SectionTabHelperSpec::SectionTabTag.new(new_window_tab, course)
+        expect(tag.a_attributes[:target]).to eq "_blank"
+      end
+
+      it "does not include aria-current if tab is not active" do
+        tag = SectionTabHelperSpec::SectionTabTag.new(new_window_tab, course)
+        expect(tag.a_attributes[:"aria-current"]).to be_nil
+      end
+
+      it "includes aria-current if tab is active" do
+        tag = SectionTabHelperSpec::SectionTabTag.new(new_window_tab, course, new_window_tab[:css_class])
+        expect(tag.a_attributes[:"aria-current"]).to eq "page"
+      end
+
+      it "includes rel='opener' if tab has target='_blank'" do
+        tag = SectionTabHelperSpec::SectionTabTag.new(new_window_tab, course)
+        expect(tag.a_attributes[:rel]).to eq "opener"
+      end
+
+      it "includes rel='noopener noreferrer' for nav menu link tabs" do
+        nav_menu_link_tab = new_window_tab.merge(
+          id: "nav_menu_link_123",
+          href: :nav_menu_link_url,
+          args: ["https://example.com"],
+          external: true
+        )
+        tag = SectionTabHelperSpec::SectionTabTag.new(nav_menu_link_tab, course)
+        expect(tag.a_attributes[:rel]).to eq "noopener noreferrer"
+      end
+
+      it "uses tab id for external link a_id" do
+        external_tab = new_window_tab.merge(
+          id: "context_external_tool_123",
+          external: true
+        )
+        tag = SectionTabHelperSpec::SectionTabTag.new(external_tab, course)
+        expect(tag.a_attributes[:id]).to eq "context_external_tool_123-link"
+      end
+
+      it "uses label-based id for non-external tabs" do
+        regular_tab = tab_assignments.merge(label: "My Assignments")
+        tag = SectionTabHelperSpec::SectionTabTag.new(regular_tab, course)
+        expect(tag.a_attributes[:id]).to eq "my-assignments-link"
+      end
+    end
+
+    describe "#a_tag" do
+      context "when tab is not hidden" do
+        let(:string) do
+          SectionTabHelperSpec::SectionTabTag.new(
+            tab_assignments, course
+          ).a_tag
+        end
+        let(:html) { Nokogiri::HTML5.fragment(string).children[0] }
+
+        it "is an a tag" do
+          expect(html.name).to eq "a"
+        end
+
+        it "includes text from tab label" do
+          expect(html.text).to eq tab_assignments[:label]
+        end
+
+        it "does not include icon indicating it is off" do
+          icon = html.xpath("i")
+          expect(icon).to be_empty
+        end
+
+        it "has an id with the label" do
+          expect(html.attributes["id"].value).to eq "#{tab_assignments[:label].downcase}-link"
+        end
+      end
+
+      context "when tab is unused" do
+        let(:string) do
+          SectionTabHelperSpec::SectionTabTag.new(
+            tab_assignments.merge(hidden_unused: true), course
+          ).a_tag
+        end
+        let(:html) { Nokogiri::HTML5.fragment(string).children[0] }
+
+        it "has a tooltip" do
+          expect(html.attributes).to include("data-tooltip")
+          expect(html.attributes).to include("data-html-tooltip-title")
+          expect(html.attributes["data-html-tooltip-title"].value).to eq "No content. Not visible to students"
+        end
+
+        it "includes icon indicating it is not visible to students" do
+          icon = html.xpath('i[contains(@class, "nav-icon")]')[0]
+          expect(icon.attributes["class"].value).to include("icon-off")
+        end
+      end
+
+      context "when tab is hidden" do
+        let(:string) do
+          SectionTabHelperSpec::SectionTabTag.new(
+            tab_assignments.merge(hidden: true), course
+          ).a_tag
+        end
+        let(:html) { Nokogiri::HTML5.fragment(string).children[0] }
+
+        it "has a tooltip" do
+          expect(html.attributes).to include("data-tooltip")
+          expect(html.attributes).to include("data-html-tooltip-title")
+          expect(html.attributes["data-html-tooltip-title"].value).to eq "Disabled. Not visible to students"
+        end
+
+        it "includes icon indicating it is not visible to students" do
+          icon = html.xpath('i[contains(@class, "nav-icon")]')[0]
+          expect(icon.attributes["class"].value).to include("icon-off")
+        end
+      end
+
+      context "when tab is neither hidden nor unused" do
+        let(:string) do
+          SectionTabHelperSpec::SectionTabTag.new(
+            tab_assignments.merge, course
+          ).a_tag
+        end
+        let(:html) { Nokogiri::HTML5.fragment(string).children[0] }
+
+        it "does not have a title attribute" do
+          expect(html.attributes).not_to include("title")
+        end
+      end
+
+      context "new tabs" do
+        let(:string) do
+          SectionTabHelperSpec::SectionTabTag.new(
+            tab_assignments.merge, course
+          ).a_tag
+        end
+
+        it "includes a new-tab-indicator span for new tabs" do
+          stub_const("SectionTabHelper::SectionTabTag::NEW_TABS", %w[assignments])
+          expect(string).to include("new-tab-indicator")
+        end
+
+        it "does not include the new-tab-indicator for tabs not marked as new" do
+          stub_const("SectionTabHelper::SectionTabTag::NEW_TABS", %w[other_stuff])
+          expect(string).not_to include("new-tab-indicator")
+        end
+      end
+
+      context "when tab is a nav menu link" do
+        let(:nav_menu_link_tab) do
+          NavMenuLinkTabs.make_tab(
+            id: "nav_menu_link_123",
+            label: "External Resource",
+            url: "https://example.com",
+            link_context_type: "course"
+          )
+        end
+        let(:string) do
+          SectionTabHelperSpec::SectionTabTag.new(nav_menu_link_tab, course).a_tag
+        end
+        let(:html) { Nokogiri::HTML5.fragment(string).children[0] }
+
+        it "includes external link icon" do
+          icon = html.xpath('i[contains(@class, "icon-external-link")]')[0]
+          expect(icon).not_to be_nil
+          expect(icon.attributes["aria-hidden"].value).to eq "true"
+          expect(icon.attributes["role"].value).to eq "presentation"
+        end
+
+        it "has rel='noopener noreferrer' attribute" do
+          expect(html.attributes["rel"].value).to eq "noopener noreferrer"
+        end
+
+        it "has target='_blank' attribute" do
+          expect(html.attributes["target"].value).to eq "_blank"
+        end
+      end
+    end
+
+    describe "#li_classes" do
+      it "returns an array including element `section`" do
+        tag = SectionTabHelperSpec::SectionTabTag.new(
+          tab_assignments, course
+        )
+        expect(tag.li_classes).to be_a Array
+        expect(tag.li_classes).to include("section")
+      end
+
+      it "includes `section-hidden` if tab is hidden" do
+        tag = SectionTabHelperSpec::SectionTabTag.new(
+          tab_assignments.merge(hidden: true), course
+        )
+
+        expect(tag.li_classes).to include("section-hidden")
+      end
+    end
+
+    describe "#to_html" do
+      let(:string) do
+        SectionTabHelperSpec::SectionTabTag.new(
+          tab_assignments, course
+        ).to_html
+      end
+      let(:html) { Nokogiri::HTML5.fragment(string).children[0] }
+
+      it "is an li tag" do
+        expect(html.name).to eq "li"
+      end
+
+      it "includes a nested a tag" do
+        expect(html.children.any? do |child|
+          child.name == "a"
+        end).to be_truthy
+      end
+    end
+  end
+end

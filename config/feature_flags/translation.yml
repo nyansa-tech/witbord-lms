@@ -1,0 +1,24 @@
+---
+translation:
+  state: hidden
+  applies_to: Course
+  display_name: IgniteAI Translations for Discussions & Announcements
+  root_opt_in: true
+  description: AI translation controls for courses, currently limited to discussions and announcements.
+  visible_on: tier_1_visible_on_hook
+
+translation_feedback:
+  state: hidden
+  applies_to: Course
+  root_opt_in: true
+  display_name: IgniteAI Translation Feedback
+  description: Allow users to provide thumbs up/down feedback on AI-generated translations in discussions and announcements.
+  visible_on: tier_1_visible_on_hook
+
+translate_inbox_messages:
+  state: hidden
+  applies_to: RootAccount
+  root_opt_in: true
+  display_name: IgniteAI Translations for Inbox
+  description: Enable translation software when composing messages. Translate inbound messages  into user's preferred language.
+  visible_on: tier_1_visible_on_hook

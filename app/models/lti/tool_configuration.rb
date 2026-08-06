@@ -1,0 +1,187 @@
+# frozen_string_literal: true
+
+#
+# Copyright (C) 2018 - present Instructure, Inc.
+#
+# This file is part of Canvas.
+#
+# Canvas is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License as published by the Free
+# Software Foundation, version 3 of the License.
+#
+# Canvas is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+# details.
+#
+# You should have received a copy of the GNU Affero General Public License along
+# with this program. If not, see <http://www.gnu.org/licenses/>.
+
+module Lti
+  class ToolConfiguration < ApplicationRecord
+    include Canvas::SoftDeletable
+
+    VISIBLE_TO_ADMINS = "admins"
+    VISIBLE_TO_MEMBERS = "members"
+    PUBLIC = "public"
+
+    belongs_to :developer_key, optional: true
+    belongs_to :lti_registration, class_name: "Lti::Registration", inverse_of: :manual_configuration, optional: true
+
+    before_validation :set_redirect_uris
+    before_validation :remove_placements_from_launch_settings
+    before_validation Lti::ToolConfigurationCleaner
+    after_update :update_external_tools!, if: :configuration_changed?
+    after_commit :update_unified_tool_id, if: :update_unified_tool_id?
+
+    validates :developer_key_id, uniqueness: { scope: :lti_registration_id }, allow_nil: true
+    validates :workflow_state, presence: true, inclusion: { in: %w[active deleted] }
+    validate :require_developer_key_or_lti_registration
+    validate :validate_configuration
+    validate :validate_placements
+    validate :validate_oidc_initiation_urls
+
+    # @return [String[]] A list of warning messages for deprecated placements
+    def placement_warnings
+      warnings = []
+      if placements.any? { |placement| placement["placement"] == "resource_selection" }
+        warnings.push(
+          t(
+            "Warning: the resource_selection placement is deprecated. Please use assignment_selection and/or link_selection instead."
+          )
+        )
+      end
+      warnings
+    end
+
+    # @returns InternalLtiConfiguration
+    def internal_lti_configuration
+      {
+        title:,
+        description:,
+        domain:,
+        tool_id:,
+        privacy_level:,
+        target_link_uri:,
+        oidc_initiation_url:,
+        oidc_initiation_urls:,
+        public_jwk_url:,
+        public_jwk:,
+        custom_fields:,
+        scopes:,
+        redirect_uris:,
+        launch_settings:,
+        placements:,
+      }.with_indifferent_access
+    end
+
+    def effective_developer_key
+      developer_key || lti_registration&.developer_key
+    end
+
+    def self.retrieve_and_extract_configuration(url)
+      InstrumentTLSCiphers.without_tls_metrics do
+        response = CanvasHttp.get(url)
+
+        raise_error(:configuration_url, 'Content type must be "application/json"') unless response["content-type"].include? "application/json"
+        raise_error(:configuration_url, response.message) unless response.is_a? Net::HTTPSuccess
+
+        JSON.parse(response.body).with_indifferent_access
+      rescue Timeout::Error
+        raise_error(:configuration_url, "Could not retrieve settings, the server response timed out.")
+      end
+    end
+
+    private
+
+    def self.raise_error(type, message)
+      tool_config_obj = new
+      tool_config_obj.errors.add(type, message)
+      raise ActiveRecord::RecordInvalid, tool_config_obj
+    end
+    private_class_method :raise_error
+
+    def require_developer_key_or_lti_registration
+      if developer_key_id.blank? && lti_registration_id.blank?
+        errors.add(:base, "must have either a developer_key or lti_registration")
+      end
+    end
+
+    def update_external_tools!
+      effective_developer_key&.update_external_tools!
+    end
+
+    def set_redirect_uris
+      return if redirect_uris.present?
+
+      self.redirect_uris = [target_link_uri]
+    end
+
+    def remove_placements_from_launch_settings
+      launch_settings.delete_if { |p| Lti::ResourcePlacement::PLACEMENTS.include?(p.to_sym) }
+    end
+
+    def validate_configuration
+      if public_jwk.blank? && public_jwk_url.blank?
+        errors.add(:lti_key, "tool configuration must have public jwk or public jwk url")
+      end
+      if public_jwk.present?
+        jwk_schema_errors = Schemas::Lti::PublicJwk.simple_validation_errors(public_jwk)
+        jwk_schema_errors&.each { |err| errors.add(:configuration, err) }
+      end
+
+      schema_errors = Schemas::InternalLtiConfiguration.simple_validation_errors(internal_lti_configuration.compact)
+      schema_errors&.each { |err| errors.add(:configuration, err) }
+
+      false if errors[:configuration].present?
+    end
+
+    def validate_placements
+      placements.each do |p|
+        unless Lti::ResourcePlacement.supported_message_type?(p["placement"], p["message_type"])
+          errors.add(:placements, "Placement #{p["placement"]} does not support message type #{p["message_type"]}")
+        end
+      end
+
+      return if disabled_placements.blank?
+
+      invalid = disabled_placements.reject { |p| Lti::ResourcePlacement::PLACEMENTS.include?(p.to_sym) }
+      errors.add(:disabled_placements, "Invalid placements: #{invalid.join(", ")}") if invalid.present?
+    end
+
+    def validate_oidc_initiation_urls
+      return unless oidc_initiation_urls.is_a?(Hash)
+
+      oidc_initiation_urls.each_value do |url|
+        if url.is_a?(String)
+          CanvasHttp.validate_url(url, allowed_schemes: nil)
+        else
+          errors.add(:configuration, "oidc_initiation_urls must be strings")
+        end
+      end
+    rescue CanvasHttp::Error, URI::Error, ArgumentError
+      errors.add(:configuration, "oidc_initiation_urls must be valid urls")
+    end
+
+    def update_unified_tool_id
+      params = {
+        lti_name: title,
+        lti_tool_id: tool_id,
+        lti_domain: domain,
+        lti_version: "1.3",
+        lti_url: target_link_uri,
+      }
+      unified_tool_id = LearnPlatform::GlobalApi.get_unified_tool_id(**params)
+      update_column(:unified_tool_id, unified_tool_id) if unified_tool_id
+    end
+    handle_asynchronously :update_unified_tool_id, priority: Delayed::LOW_PRIORITY
+
+    def update_unified_tool_id?
+      saved_changes.keys.intersect?(%w[title tool_id domain target_link_uri])
+    end
+
+    def configuration_changed?
+      saved_changes.keys.intersect?(internal_lti_configuration.keys.map(&:to_s))
+    end
+  end
+end

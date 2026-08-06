@@ -1,0 +1,6 @@
+production:
+  domain: "learn.witbord.com"
+  ssl: true
+
+# files host can match domain for small installs; split later if needed
+# files_domain: "files.witbord.com"

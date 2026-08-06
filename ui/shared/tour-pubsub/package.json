@@ -1,0 +1,8 @@
+{
+  "name": "@canvas/tour-pubsub",
+  "private": true,
+  "version": "1.0.0",
+  "author": "neme",
+  "main": "./index.ts",
+  "owner": "VICE"
+}
