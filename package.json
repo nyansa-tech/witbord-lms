@@ -377,7 +377,7 @@
     "last 2 safari versions",
     "last 2 ChromeAndroid versions"
   ],
-  "repository": "instructure/canvas-lms",
+  "repository": "nyansa-tech/witbord-lms",
   "scripts": {
     "test": "vitest run --color",
     "test:coverage": "script/generate_js_coverage",

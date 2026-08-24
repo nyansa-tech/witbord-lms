@@ -1,14 +1,12 @@
 name: Bug report
-description: File a bug report.
+description: File a bug report for Witbord.
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to report a bug! Please fill out the bug report below as best you can.
+        Thanks for taking the time to report a bug in **Witbord by Nyansa Technologies**.
 
-        If you're experiencing issues setting up or running a self-hosted Canvas instance, please do _not_ file an issue here. Instead, please post to the [Canvas LMS Mailing List](https://groups.google.com/g/canvas-lms-users) where the community can help you troubleshoot. While some issues may be actual bugs, many issues are often due to configuration problems or lack of familiarity with running a Ruby on Rails application, and the community is a great resource for those types of questions.
-
-        For security vulnerabilities, please report them through our [Vulnerability Disclosure Program](https://www.instructure.com/trust-center/vulnerability-disclosure).
+        Please fill out the form below with as much detail as you can. For security issues, contact Nyansa Technologies directly rather than opening a public issue.
   - type: textarea
     id: bug-description
     attributes:
