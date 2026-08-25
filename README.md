@@ -1,18 +1,34 @@
-Canvas LMS
-======
+# Witbord LMS
 
-Canvas is a modern, open-source [LMS](https://en.wikipedia.org/wiki/Learning_management_system)
-developed and maintained by [Instructure Inc.](https://www.instructure.com/) It is released under the
-AGPLv3 license for use by anyone interested in learning more about or using
-learning management systems.
+**Witbord** is a modern learning management system by
+[Nyansa Technologies](https://nyansa.tech), built for multi-university
+deployment. It is based on the open-source
+[Canvas LMS](https://github.com/instructure/canvas-lms) project and remains
+available under the AGPLv3 license.
 
-[Please see our main wiki page for more information](http://github.com/instructure/canvas-lms/wiki)
+In product and documentation, the product name is **Witbord**. Marketing may
+refer to it as *Witbord by Nyansa Technologies*.
 
-Installation
-=======
+Repository: [nyansa-tech/witbord-lms](https://github.com/nyansa-tech/witbord-lms)
 
-Detailed instructions for installation and configuration of Canvas are provided
-on our wiki.
+# Installation
 
- * [Quick Start](http://github.com/instructure/canvas-lms/wiki/Quick-Start)
- * [Production Start](http://github.com/instructure/canvas-lms/wiki/Production-Start)
+For local development with Docker:
+
+```bash
+docker-compose up -d
+docker-compose run --rm web bundle exec rake db:initial_setup
+```
+
+Then open [http://localhost:3000](http://localhost:3000)
+(default admin: `admin@example.com` / `admin`).
+
+More detail: [Developing with Docker](doc/docker/developing_with_docker.md)
+
+# Upstream
+
+Witbord is derived from Canvas LMS by Instructure Inc. Upstream project and
+historical documentation:
+
+- [Canvas LMS on GitHub](https://github.com/instructure/canvas-lms)
+- [Canvas LMS wiki](https://github.com/instructure/canvas-lms/wiki)
