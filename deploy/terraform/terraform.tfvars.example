@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars (gitignored) and fill in:
+#   cp terraform.tfvars.example terraform.tfvars
+
+aws_region     = "af-south-1"
+project_name   = "witbord-lms"
+instance_type  = "t3.xlarge"
+root_volume_gb = 60
+
+# Must be globally unique across all AWS accounts
+s3_bucket_name = "witbord-files-prod"
+
+# Your public IP with /32 — find with: curl -s https://checkip.amazonaws.com
+admin_cidr = "203.0.113.10/32"
+
+# Existing EC2 key pair name in af-south-1 (create in Console if needed)
+key_name = "witbord-pilot"
+
+ssh_username = "ubuntu"

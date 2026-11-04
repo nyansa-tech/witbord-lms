@@ -20,10 +20,16 @@
 
 ## DNS records
 
+Elastic IP from Terraform:
+
+```bash
+cd deploy/terraform && terraform output -raw public_ip
+```
+
 | Type | Name | Content | Proxy |
 |------|------|---------|-------|
-| A | `learn` | `<EC2 Elastic IP>` | Proxied (orange cloud) |
-| A | `*` | `<EC2 Elastic IP>` | Proxied (school vanity hosts) |
+| A | `learn` | `<terraform output public_ip>` | Proxied (orange cloud) |
+| A | `*` | `<same Elastic IP>` | Proxied (school vanity hosts) |
 | A or CNAME | `@` | (see redirect) | Proxied |
 | CNAME | `www` | `witbord.com` | Proxied |
 

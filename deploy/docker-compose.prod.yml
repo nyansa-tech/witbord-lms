@@ -14,6 +14,12 @@ services:
       dockerfile: Dockerfile.production
       args:
         USER_ID: ${HOST_USER_ID:-1000}
+        # Required at image-build time for Rails ERB configs during compile_assets
+        ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        CANVAS_DATABASE_HOST: ${CANVAS_DATABASE_HOST:-postgres}
+        CANVAS_DATABASE_USERNAME: ${CANVAS_DATABASE_USERNAME:-postgres}
+        CANVAS_DATABASE_PRODUCTION: ${CANVAS_DATABASE_PRODUCTION:-canvas_production}
     image: witbord-lms:${WITBORD_IMAGE_TAG:-prod}
     restart: unless-stopped
     environment: &WEB_ENV

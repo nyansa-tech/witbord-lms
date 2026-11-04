@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# First boot / release prepare for Witbord on EC2.
+# First boot / release prepare for Witbord on EC2 (t3.xlarge / 16 GB pilot).
 # Run from the repository root on the server:
 #   bash deploy/scripts/first_boot.sh
 set -euo pipefail
@@ -17,6 +17,38 @@ set -a
 source deploy/.env
 set +a
 
+ensure_swap() {
+  local swap_gb="${WITBORD_SWAP_GB:-8}"
+  if swapon --show | grep -q .; then
+    echo "==> Swap already present"
+    swapon --show
+    return 0
+  fi
+  if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null; then
+    echo "WARNING: no swap and cannot sudo non-interactively; builds may OOM on 16 GB."
+    echo "         Create swap manually or re-run as a user with passwordless sudo."
+    return 0
+  fi
+  echo "==> Creating ${swap_gb}G swapfile (pilot: fit asset builds on t3.xlarge)"
+  local sudo_cmd=()
+  if [[ "$(id -u)" -ne 0 ]]; then
+    sudo_cmd=(sudo)
+  fi
+  if [[ ! -f /swapfile ]]; then
+    "${sudo_cmd[@]}" fallocate -l "${swap_gb}G" /swapfile 2>/dev/null \
+      || "${sudo_cmd[@]}" dd if=/dev/zero of=/swapfile bs=1M count=$((swap_gb * 1024))
+    "${sudo_cmd[@]}" chmod 600 /swapfile
+    "${sudo_cmd[@]}" mkswap /swapfile
+  fi
+  "${sudo_cmd[@]}" swapon /swapfile || true
+  if ! grep -q '^/swapfile ' /etc/fstab 2>/dev/null; then
+    echo '/swapfile none swap sw 0 0' | "${sudo_cmd[@]}" tee -a /etc/fstab >/dev/null
+  fi
+  swapon --show || true
+}
+
+ensure_swap
+
 echo "==> Applying production config templates → config/"
 mkdir -p config
 for tmpl in deploy/config/*.yml.template; do
@@ -30,7 +62,10 @@ if [[ ! -f deploy/certs/origin.pem || ! -f deploy/certs/origin.key ]]; then
   echo "         Create a Cloudflare Origin Certificate before expecting HTTPS."
 fi
 
-echo "==> Building and starting containers"
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}"
+echo "==> NODE_OPTIONS=${NODE_OPTIONS}"
+
+echo "==> Building and starting containers (this can take a long time on t3.xlarge)"
 HOST_USER_ID="$(id -u)"
 export HOST_USER_ID
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env build
@@ -52,11 +87,19 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm
   -e CANVAS_LMS_STATS_COLLECTION="${CANVAS_LMS_STATS_COLLECTION:-opt_out}" \
   web bundle exec rake db:configure_admin
 
-echo "==> Compile CSS assets"
+# Sequential asset steps — never run CSS and webpack in parallel on 16 GB
+echo "==> Compile CSS assets (step 1/2, low-memory)"
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm \
   -e RAILS_ENV=production \
-  -e NODE_OPTIONS=--max-old-space-size=4096 \
+  -e NODE_OPTIONS \
   web yarn run build:css || true
+
+echo "==> Compile JS / webpack production (step 2/2, low-memory)"
+echo "    If this OOMs, stop other containers briefly or temporarily upsize to t3.2xlarge — see deploy/COST.md"
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm \
+  -e RAILS_ENV=production \
+  -e NODE_OPTIONS \
+  web yarn run webpack-production || true
 
 echo "==> Witbord branding"
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm \
@@ -67,3 +110,4 @@ echo ""
 echo "Boot script finished."
 echo "Next: Cloudflare DNS (deploy/CLOUDFLARE.md) then smoke test (deploy/SMOKE.md)"
 echo "Login: https://learn.witbord.com/login"
+echo "Idle tip: stop the EC2 from your laptop to save money — see deploy/COST.md"

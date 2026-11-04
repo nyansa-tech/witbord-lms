@@ -90,6 +90,18 @@ COPY --chown=docker:docker . /usr/src/app
 RUN mkdir -p tmp/files
 ENV COMPILE_ASSETS_BRAND_CONFIGS=0
 ENV COMPILE_ASSETS_NPM_INSTALL=0
+# Build-time secrets for ERB config during compile_assets (pass via compose build args)
+ARG ENCRYPTION_KEY=build_only_encryption_key_replace_at_runtime_xxxxxxxx
+ARG POSTGRES_PASSWORD=build_only_postgres_password
+ARG CANVAS_DATABASE_HOST=postgres
+ARG CANVAS_DATABASE_USERNAME=postgres
+ARG CANVAS_DATABASE_PRODUCTION=canvas_production
+ENV ENCRYPTION_KEY=$ENCRYPTION_KEY \
+  POSTGRES_PASSWORD=$POSTGRES_PASSWORD \
+  CANVAS_DATABASE_HOST=$CANVAS_DATABASE_HOST \
+  CANVAS_DATABASE_USERNAME=$CANVAS_DATABASE_USERNAME \
+  CANVAS_DATABASE_PRODUCTION=$CANVAS_DATABASE_PRODUCTION \
+  NODE_OPTIONS=--max-old-space-size=4096
 RUN unset RUBY && bundle config --global build.nokogiri --use-system-libraries && \
   bundle config --global build.ffi --enable-system-libffi && \
   bundle install

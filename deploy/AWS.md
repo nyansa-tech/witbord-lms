@@ -1,51 +1,95 @@
-# AWS provisioning checklist (af-south-1)
+# AWS provisioning — cheapest Witbord pilot (`af-south-1`)
 
-Default region: **Africa (Cape Town) `af-south-1`**. Fallback: `eu-west-1`.
+Default region: **Africa (Cape Town) `af-south-1`**.
 
-## 1. Networking
+**Pilot target:** always-on **`t3.xlarge`** (4 vCPU / 16 GB) ≈ **$160/mo** compute, plus small gp3 disk, EIP, and S3. See [COST.md](COST.md).
 
-- [ ] VPC with a public subnet (default VPC is fine for v1)
-- [ ] Security group `witbord-lms-sg`:
-  - Inbound **22/tcp** from your admin IP only
-  - Inbound **80/tcp** and **443/tcp** from Cloudflare IP ranges  
-    (https://www.cloudflare.com/ips/) — or temporarily `0.0.0.0/0` while testing, then lock down
-  - Outbound: allow all (for SES, S3, package installs)
+Do **not** use `m6i.2xlarge` / `m6i.4xlarge` for this pilot unless asset builds fail after swap + sequential builds.
 
-## 2. EC2
+## 0. Provision with Terraform (preferred)
 
-- [ ] AMI: Ubuntu Server 24.04 LTS
-- [ ] Instance type: **c6i.4xlarge** or **m6i.4xlarge** (16 vCPU / 32 GB) — Canvas asset builds need RAM
-  - Absolute minimum to try: `m6i.2xlarge` (8 vCPU / 32 GB)
-- [ ] Root volume: **100 GB gp3**
-- [ ] Additional EBS **100 GB gp3** mounted at `/var/lib/docker/volumes` (or bind Postgres data dir) — optional but recommended
-- [ ] Assign **Elastic IP**
-- [ ] Attach IAM instance profile (see below)
-- [ ] User data / first SSH: install Docker Engine + Compose plugin
+On your laptop (AWS CLI + Terraform installed):
 
 ```bash
-# On the instance
+brew install awscli
+brew tap hashicorp/tap && brew install hashicorp/tap/terraform
+aws configure   # region af-south-1
+cd deploy/terraform
+cp terraform.tfvars.example terraform.tfvars
+# set admin_cidr (your IP/32) and key_name
+terraform init && terraform apply
+terraform output public_ip
+```
+
+Full steps: [terraform/README.md](terraform/README.md).
+
+Terraform creates:
+
+- [x] Default-VPC EC2 (`t3.xlarge`, 60 GB gp3, Ubuntu 24.04)
+- [x] Security group `witbord-lms-sg` (SSH from admin CIDR; 80/443 open)
+- [x] Elastic IP
+- [x] IAM instance profile with S3 access
+- [x] Private S3 bucket (default name `witbord-files-prod`)
+- [x] User-data: Docker Engine + Compose + 8 GB swap
+
+Still manual after apply:
+
+- [ ] SES domain / SMTP (sandbox OK first)
+- [ ] Cloudflare DNS + origin certs ([CLOUDFLARE.md](CLOUDFLARE.md))
+- [ ] `deploy/.env` + `bash deploy/scripts/first_boot.sh` on the instance
+- [ ] Smoke test ([SMOKE.md](SMOKE.md))
+
+### Stop when idle (during setup)
+
+```bash
+cd deploy/terraform
+aws ec2 stop-instances --instance-ids "$(terraform output -raw instance_id)" --region af-south-1
+aws ec2 start-instances --instance-ids "$(terraform output -raw instance_id)" --region af-south-1
+```
+
+EIP stays attached; Cloudflare A record does not need to change after start.
+
+---
+
+## 1. Networking (if not using Terraform)
+
+- [ ] Default VPC / public subnet is fine for v1
+- [ ] Security group `witbord-lms-sg`:
+  - Inbound **22/tcp** from your admin IP only
+  - Inbound **80/tcp** and **443/tcp** from `0.0.0.0/0` while testing, then optionally Cloudflare IP ranges  
+    (https://www.cloudflare.com/ips/)
+  - Outbound: allow all
+
+## 2. EC2 (if not using Terraform)
+
+- [ ] AMI: Ubuntu Server 24.04 LTS
+- [ ] Instance type: **`t3.xlarge`** (4 vCPU / 16 GB) — pilot default
+  - Only upsizing if builds OOM after swap: try `t3.2xlarge` briefly, then downsize
+- [ ] Root volume: **60 GB gp3** (no second volume for pilot)
+- [ ] Assign **Elastic IP**
+- [ ] Attach IAM instance profile (S3 — see Terraform / section 4)
+- [ ] Install Docker (same as `deploy/terraform/user_data.sh`)
+
+```bash
+# On the instance (manual path)
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
-  | sudo tee /etc/apt/sources.list.d/docker.list
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+# … Docker install from terraform/user_data.sh …
 sudo usermod -aG docker ubuntu
 ```
 
 ## 3. S3 — file storage
 
-- [ ] Bucket: `witbord-files-prod` in `af-south-1`
+Terraform creates this by default. Manual checklist:
+
+- [ ] Bucket: `witbord-files-prod` in `af-south-1` (or unique name if taken)
 - [ ] Block all public access (Canvas uses signed URLs)
-- [ ] CORS: allow `https://learn.witbord.com` if browser uploads require it
+- [ ] CORS: allow `https://learn.witbord.com`
 - [ ] Lifecycle: abort incomplete multipart uploads after 7 days
 
 ## 4. IAM instance role
 
-Create role `witbord-ec2-role` with policy allowing:
+Role `witbord-lms-ec2-role` (Terraform) with:
 
 ```json
 {
@@ -65,20 +109,22 @@ Create role `witbord-ec2-role` with policy allowing:
 }
 ```
 
-Attach to the EC2 instance. Leave `AWS_ACCESS_KEY_ID` / `SECRET` empty in `deploy/.env` when using the role (configure Canvas/`aws-sdk` for instance credentials as needed).
+Leave `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` empty in `deploy/.env` when the role is attached.
 
 ## 5. SES — outbound email
 
 - [ ] Verify domain **witbord.com** (DKIM + SPF via Cloudflare DNS)
-- [ ] Request **production access** (leave sandbox)
-- [ ] Create SMTP credentials
-- [ ] Put SMTP user/password in `deploy/.env`
-- [ ] From address: `notifications@witbord.com` (must be on verified domain)
+- [ ] Stay in **sandbox** for early smoke (verified recipients only)
+- [ ] Later: request **production access**
+- [ ] Create SMTP credentials → `deploy/.env`
+- [ ] From: `notifications@witbord.com`
+
+SMTP host for Cape Town: `email-smtp.af-south-1.amazonaws.com` (if SES is unavailable in-region, use `eu-west-1` SMTP and document it in `.env`).
 
 ## 6. Backups
 
-- [ ] Enable **EBS snapshot** schedule (daily) for root + data volumes
-- [ ] Cron `pg_dump` from the postgres container to S3:
+- [ ] Enable **EBS snapshot** schedule (daily) for the root volume
+- [ ] Cron `pg_dump` to S3:
 
 ```bash
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env exec -T postgres \
@@ -88,7 +134,7 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env exec -T 
 
 ## 7. After compute is up
 
-1. Clone repo → configure `deploy/.env` → install origin certs  
-2. Run `bash deploy/scripts/first_boot.sh`  
-3. Complete [`CLOUDFLARE.md`](CLOUDFLARE.md)  
-4. Smoke test ([`SMOKE.md`](SMOKE.md))
+1. SSH in → clone repo → configure `deploy/.env` → install origin certs  
+2. Run `bash deploy/scripts/first_boot.sh` (creates swap-aware, low-RAM asset steps)  
+3. Complete [CLOUDFLARE.md](CLOUDFLARE.md) — A record `learn` → `terraform output -raw public_ip`  
+4. Smoke test ([SMOKE.md](SMOKE.md))
