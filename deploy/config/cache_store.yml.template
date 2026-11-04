@@ -1,7 +1,5 @@
 production:
-  cache_store: redis
-  redis_url: redis://redis:6379
+  cache_store: redis_cache_store
 
 development:
-  cache_store: redis
-  redis_url: redis://redis:6379
+  cache_store: redis_cache_store
