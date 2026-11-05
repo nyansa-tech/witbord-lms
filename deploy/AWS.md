@@ -37,6 +37,7 @@ Still manual after apply:
 - [ ] SES domain / SMTP (sandbox OK first)
 - [ ] Cloudflare DNS + origin certs ([CLOUDFLARE.md](CLOUDFLARE.md))
 - [ ] `deploy/.env` + `bash deploy/scripts/first_boot.sh` on the instance
+- [ ] Self-hosted GitHub Actions runner for auto-deploy ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md))
 - [ ] Smoke test ([SMOKE.md](SMOKE.md))
 
 ### Stop when idle (during setup)

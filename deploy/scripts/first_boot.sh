@@ -94,5 +94,7 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm
 echo ""
 echo "Boot script finished."
 echo "Next: Cloudflare DNS (deploy/CLOUDFLARE.md) then smoke test (deploy/SMOKE.md)"
+echo "Auto-deploy: register a self-hosted runner — see deploy/GITHUB_ACTIONS.md"
+echo "             (not done by this script; needs an interactive GitHub token)"
 echo "Login: https://learn.witbord.com/login"
 echo "Idle tip: stop the EC2 from your laptop to save money — see deploy/COST.md"

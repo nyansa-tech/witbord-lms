@@ -10,6 +10,8 @@
 | [`config/*.yml.template`](config/) | Canvas production config |
 | [`nginx/witbord.conf`](nginx/witbord.conf) | TLS termination (Cloudflare origin cert) |
 | [`scripts/first_boot.sh`](scripts/first_boot.sh) | Swap check, build, migrate, admin, assets, branding |
+| [`scripts/update.sh`](scripts/update.sh) | Smart prod update (pull, optional rebuild, migrate) |
+| [`GITHUB_ACTIONS.md`](GITHUB_ACTIONS.md) | Self-hosted runner — auto-deploy on push to `main` |
 | [`AWS.md`](AWS.md) | Provisioning checklist + stop/start |
 | [`COST.md`](COST.md) | Bill expectations |
 | [`CLOUDFLARE.md`](CLOUDFLARE.md) | DNS + SSL for `witbord.com` |
@@ -59,6 +61,10 @@ bash deploy/scripts/first_boot.sh
 - Point `learn` A record at the Elastic IP — [CLOUDFLARE.md](CLOUDFLARE.md)
 - Verify — [SMOKE.md](SMOKE.md)
 
+### 4. Auto-deploy (optional but recommended)
+
+Register a self-hosted Actions runner on the EC2 — [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md). After that, every push to **`main`** runs `deploy/scripts/update.sh` on the box.
+
 ### Idle during setup
 
 ```bash
@@ -80,3 +86,4 @@ aws ec2 stop-instances --instance-ids "$(terraform output -raw instance_id)" --r
 - Never reuse the local Docker `ENCRYPTION_KEY` in production.
 - `JWT_ENCRYPTION_KEY` must be **exactly 64 characters** (`openssl rand -hex 32`). Post-login 500s with `jwt encryption key must be 64 characters` mean this is missing or wrong length — do **not** change `ENCRYPTION_KEY` to fix it (that would break already-encrypted DB fields).
 - After boot, `rake witbord:setup` brands the root account (invoked by `first_boot.sh`).
+- Push to `main` deploys via the self-hosted runner once registered ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)).

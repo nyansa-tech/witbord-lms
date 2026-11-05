@@ -1,0 +1,23 @@
+# Deploy Witbord LMS to the pilot EC2 via a self-hosted runner on that box.
+# Requires a runner registered with labels: self-hosted, witbord-prod
+# Setup: deploy/GITHUB_ACTIONS.md
+
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Update EC2 stack
+    runs-on: [self-hosted, witbord-prod]
+    # Do not checkout into the runner workdir — update.sh pulls in /opt/witbord-lms.
+    steps:
+      - name: Run smart update
+        run: bash /opt/witbord-lms/deploy/scripts/update.sh
