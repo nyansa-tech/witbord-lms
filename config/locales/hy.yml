@@ -12740,7 +12740,7 @@ hy:
   process_as_ui_changes_8e34ed2a: "Մշակվում են  որպես UI փոփոխություններ "
   process_data_2f5f962f: "Մշակել տվյալները"
   processing_8c569014: "Մշակվում է..."
-  product_name: Canvas
+  product_name: Witbord
   profile: 
     access_token: 
       default_app_name: "Հավելվածներ չկան"
@@ -17841,7 +17841,7 @@ hy:
           այդ դասընթացները հասանելի լինեն, դուք կտեսնեք դրանց մասին տեղեկությունները այստեղ
           և նավարկման վերին տողում: Միևնույն ժամանակ կարող եք գրանցվել
           լրացուցիչ դասընթացների կամ ստեղծել ձեր պրոֆիլը:
-      welcome_to_happiness: "Ձեզ ողջունում է Canvas-ը"
+      welcome_to_happiness: "Ձեզ ողջունում է %{product_name}"
   users_must_post_before_seeing_replies_d1761968: "Օգտատերերի մասնակցությունը պարտադիր է պատասխանները տեսնելու համար"
   users_with_no_enrollments_5dddce33: "Օգտատերեր առանց գրանցման "
   utc_e44049af: UTC

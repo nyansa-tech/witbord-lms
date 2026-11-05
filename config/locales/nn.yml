@@ -20605,7 +20605,7 @@ nn:
   processed_4725b02: Behandla
   processing_2fcc9739: Handsamar
   processing_8c569014: Behandlar...
-  product_name: Canvas
+  product_name: Witbord
   product_tours_1e19eb95: Produktvegvisar
   production_settings_62902166: Produksjonsinnstillingar
   proficiency_calculation_57f0bdf: Ferdigheitsberekning
@@ -29046,7 +29046,7 @@ nn:
           emna er tilgjengeleg, vil du sjå informasjon om dei her
           og i navigasjonsmenyen til venstre. I mellomtida kan du melde deg på
           andre emne eller sette opp brukarprofilen din.
-      welcome_to_happiness: "Velkomen til Canvas!"
+      welcome_to_happiness: "Velkomen til %{product_name}!"
   users_act_as_d922940: "Brukarar - opptre som"
   users_add_remove_observers_d1273d9: "Brukarar - legg til / fjern observatørar"
   users_add_remove_students_in_courses_efe7e748: "Brukarar - legg til / fjern studentar i emner"

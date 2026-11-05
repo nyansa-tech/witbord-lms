@@ -28615,7 +28615,7 @@ en-AU:
   processing_8c569014: Processing...
   processing_progress_c7a4ee19: "Processing (%{progress}%)"
   product_id_1363714f: "Product ID"
-  product_name: Canvas
+  product_name: Witbord
   product_tours_1e19eb95: "Product Tours"
   production_settings_62902166: "Production Settings"
   productname_images_b5b05029: "%{productName} Images"
@@ -36023,7 +36023,7 @@ en-AU:
   teachers_view_f203bd72: "Teachers View"
   teaching_assistant_9635edaf: "Teaching Assistant"
   teal_f729a294: Teal
-  tell_us_how_and_when_you_would_like_to_be_notified_de3ed2bc: "Please tell us how and when you would like to be notified of events in Canvas."
+  tell_us_how_and_when_you_would_like_to_be_notified_de3ed2bc: "Please tell us how and when you would like to be notified of events in %{product_name}."
   telugu_c5475780: Telugu
   tempe_grade_export_c611da01: "Tempe Mark Export"
   template_1_f0d858b8: "template 1"
@@ -40337,7 +40337,7 @@ en-AU:
                   those courses are available, you will see information about them here
                   and in the navigation on the left side. In the meantime, feel free to sign up for
                   more courses or set up your profile.
-      welcome_to_happiness: "Welcome to Canvas!"
+      welcome_to_happiness: "Welcome to %{product_name}!"
   users_act_as_d922940: "Users - act as"
   users_add_remove_observers_d1273d9: "Users - add / remove observers"
   users_add_remove_students_in_courses_efe7e748: "Users - add / remove students in courses"

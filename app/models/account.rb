@@ -526,7 +526,8 @@ class Account < ApplicationRecord
   end
 
   def product_name
-    settings[:product_name] || t("#product_name", "Witbord")
+    # Prefer account setting; never fall back to i18n "Canvas" from upstream locales.
+    settings[:product_name].presence || "Witbord"
   end
 
   def usage_rights_required?

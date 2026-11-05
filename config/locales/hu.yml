@@ -19249,7 +19249,7 @@ hu:
   processed_4725b02: Feldolgozott
   processing_2fcc9739: Feldolgozás
   processing_8c569014: Feldolgozás...
-  product_name: Canvas
+  product_name: Witbord
   product_tours_1e19eb95: Terméktúrák
   production_settings_62902166: "Gyártási beállítások"
   proficiency_calculation_57f0bdf: "Jártassági számítás"
@@ -27168,7 +27168,7 @@ hu:
           Miután létrehozta vagy feliratkozott a kurzusokra, látni fogja a
           beszélgetéseket az összes osztályból.
       unpublished_courses_message: "Beiratkozott egy vagy több olyan kurzusra, amely még nem kezdődött el."
-      welcome_to_happiness: "Üdvözöljük a Canvasban!"
+      welcome_to_happiness: "Üdvözöljük a %{product_name}!"
   users_act_as_d922940: "Felhasználók - belépés mint"
   users_add_remove_observers_d1273d9: "Felhasználók - megfigyelők hozzáadása / eltávolítása"
   users_add_remove_students_in_courses_efe7e748: "Felhasználók - hallgatók hozzáadása/eltávolítása a kurzusba/kurzusból"

@@ -1,4 +1,5 @@
 en:
+  product_name: Witbord
   attributes:
     idp_entity_id: IdP Entity ID
     unique_id: Unique ID

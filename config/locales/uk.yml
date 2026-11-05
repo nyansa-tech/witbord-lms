@@ -13528,7 +13528,7 @@ uk:
   process_data_2f5f962f: "Обробка даних"
   processing_2fcc9739: Обробка
   processing_8c569014: Обробка...
-  product_name: Canvas
+  product_name: Witbord
   profile: 
     access_token: 
       default_app_name: "Немає додатків"
@@ -18892,7 +18892,7 @@ uk:
           ці курси стануть доступними, ви побачите інформацію про них тут
           і в навігації ліворуч. Тим часом можете зареєструватися на
           більше курсів або налаштувати свій профіль.
-      welcome_to_happiness: "Ласкаво просимо до Canvas!"
+      welcome_to_happiness: "Ласкаво просимо до %{product_name}!"
   users_d1b60cb0: Користувачі
   users_matching_search_term_c604db9e: "Відповідність користувачів \"%{search_term}\""
   users_must_post_before_seeing_replies_d1761968: "Користувачі повинні опублікувати, перш ніж побачать відповіді"
