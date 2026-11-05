@@ -53,6 +53,7 @@ const SignIn = () => {
     loginHandleName,
     selfRegistrationType,
     customMessageLogin,
+    productName,
   } = useNewLoginData()
 
   const [username, setUsername] = useState('')
@@ -174,7 +175,7 @@ const SignIn = () => {
     <Flex direction="column" gap="large">
       <Flex direction="column" gap="small">
         <Heading as="h1" level="h2">
-          {I18n.t('Welcome to Canvas')}
+          {I18n.t('Welcome to %{productName}', {productName: productName || 'Witbord'})}
         </Heading>
 
         {selfRegistrationType && (

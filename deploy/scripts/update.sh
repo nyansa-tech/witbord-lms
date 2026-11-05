@@ -55,6 +55,8 @@ needs_image_rebuild() {
     fi
     return 1
   fi
+  # Only config/ is bind-mounted into the container; app/ui/lib/public live in the
+  # image, so most code changes require a rebuild.
   # grep in `if` so set -e / pipefail do not abort when there is no match
   if git diff --name-only "$before" "$after" -- \
     'Dockerfile*' \
@@ -65,7 +67,15 @@ needs_image_rebuild() {
     'yarn.lock' \
     'package.json' \
     'packages' \
+    'app' \
+    'ui' \
+    'lib' \
+    'public' \
+    'gems' \
+    'bin' \
+    'script' \
     'deploy/docker-compose.prod.yml' \
+    'deploy/nginx' \
     | grep -q .; then
     return 0
   fi

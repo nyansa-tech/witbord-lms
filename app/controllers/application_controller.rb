@@ -288,6 +288,7 @@ class ApplicationController < ActionController::Base
           k12: k12?,
           help_link_name:,
           help_link_icon:,
+          PRODUCT_NAME: @domain_root_account&.product_name || I18n.t("#product_name", "Witbord"),
           ADA_CHATBOT_ENABLED: @domain_root_account&.feature_enabled?(:ada_chatbot),
           use_high_contrast: @current_user&.prefers_high_contrast?,
           auto_show_cc: @current_user&.auto_show_cc?,

@@ -30,7 +30,7 @@
         <%= t("Notifications") %>.
       </h4>
       <span class="notification_message">
-        <%= t("Tell us how and when you would like to be notified of events in Canvas.") %>
+        <%= t("Tell us how and when you would like to be notified of events in %{product_name}.", product_name: @domain_root_account.product_name) %>
       </span>
     </div>
     <div class="ic-notification__actions">

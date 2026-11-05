@@ -25,6 +25,7 @@ interface NewLoginData {
   loginHandleName?: string
   loginLogoUrl?: string
   loginLogoText?: string
+  productName?: string
   bodyBgColor?: string
   bodyBgImage?: string
   isPreviewMode?: boolean
@@ -132,6 +133,7 @@ const fetchLoginDataFromAttributes = (): NewLoginData => {
         loginHandleName: getStringAttribute(container, 'data-login-handle-name'),
         loginLogoUrl: getStringAttribute(container, 'data-login-logo-url'),
         loginLogoText: getStringAttribute(container, 'data-login-logo-text'),
+        productName: getStringAttribute(container, 'data-product-name'),
         bodyBgColor: getStringAttribute(container, 'data-body-bg-color'),
         bodyBgImage: getStringAttribute(container, 'data-body-bg-image'),
         isPreviewMode: getBooleanAttribute(container, 'data-is-preview-mode'),
@@ -180,6 +182,7 @@ export const useFetchNewLoginData = (): NewLoginDataResult => {
     loginHandleName: undefined,
     loginLogoUrl: undefined,
     loginLogoText: undefined,
+    productName: undefined,
     bodyBgColor: undefined,
     bodyBgImage: undefined,
     isPreviewMode: undefined,

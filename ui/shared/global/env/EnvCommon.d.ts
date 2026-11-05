@@ -154,6 +154,7 @@ export interface EnvCommon {
   k12: false
   help_link_name: string
   help_link_icon: string
+  PRODUCT_NAME?: string
   use_high_contrast: boolean
   use_dyslexic_font?: boolean
   widget_dashboard?: boolean

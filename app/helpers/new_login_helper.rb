@@ -30,6 +30,7 @@ module NewLoginHelper
       login_handle_name:,
       login_logo_url:,
       login_logo_text:,
+      product_name:,
       body_bg_color:,
       body_bg_image:,
       is_preview_mode: preview_mode,
@@ -90,6 +91,11 @@ module NewLoginHelper
   # short_name for use as alt text only if a custom logo is present
   def login_logo_text
     login_logo_url.present? ? @domain_root_account.short_name.presence : nil
+  end
+
+  # white-label product name (Witbord by default)
+  def product_name
+    @domain_root_account.product_name.presence
   end
 
   # background color for the login page from brand variables

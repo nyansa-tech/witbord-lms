@@ -27,6 +27,7 @@ interface NewLoginDataContextType {
   loginHandleName?: string
   loginLogoUrl?: string
   loginLogoText?: string
+  productName?: string
   bodyBgColor?: string
   bodyBgImage?: string
   isPreviewMode?: boolean
@@ -63,6 +64,7 @@ export const NewLoginDataProvider = ({children}: NewLoginDataProviderProps) => {
     loginHandleName,
     loginLogoUrl,
     loginLogoText,
+    productName,
     bodyBgColor,
     bodyBgImage,
     isPreviewMode,
@@ -91,6 +93,7 @@ export const NewLoginDataProvider = ({children}: NewLoginDataProviderProps) => {
     loginHandleName,
     loginLogoUrl,
     loginLogoText,
+    productName,
     bodyBgColor,
     bodyBgImage,
     isPreviewMode,
