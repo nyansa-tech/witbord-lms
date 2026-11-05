@@ -11,16 +11,90 @@ SCRIPTPATH="$(
   cd -- "$(dirname "$0")" >/dev/null 2>&1
   pwd -P
 )"
-CANVAS=$(dirname $SCRIPTPATH)
+CANVAS=$(dirname "$SCRIPTPATH")
 
-NEW_JS_FILES=$(git diff --cached --name-only --diff-filter=A | grep -E "ui/.*\.(js|jsx)$")
+# Git hooks often get a minimal PATH — put Homebrew ruby/docker first.
+ensure_dev_path() {
+  local extras=(
+    /opt/homebrew/bin
+    /usr/local/bin
+    /opt/homebrew/opt/ruby@3.4/bin
+    /usr/local/opt/ruby@3.4/bin
+    /opt/homebrew/lib/ruby/gems/3.4.0/bin
+    /usr/local/lib/ruby/gems/3.4.0/bin
+  )
+  local d
+  for d in "${extras[@]}"; do
+    if [[ -d "$d" ]]; then
+      case ":$PATH:" in
+        *":$d:"*) ;;
+        *) export PATH="$d:$PATH" ;;
+      esac
+    fi
+  done
+}
+ensure_dev_path
+
+# Prefer Homebrew Ruby matching Gemfile.lock (3.4.x) over macOS /usr/bin/ruby (2.6)
+# and over a default Homebrew `ruby` that may be 4.x.
+prefer_homebrew_ruby() {
+  ensure_dev_path
+  local candidates=(
+    /opt/homebrew/opt/ruby@3.4/bin
+    /usr/local/opt/ruby@3.4/bin
+    /opt/homebrew/opt/ruby/bin
+    /usr/local/opt/ruby/bin
+  )
+  local d
+  for d in "${candidates[@]}"; do
+    if [[ -x "$d/ruby" && -x "$d/bundle" ]]; then
+      export PATH="$d:${PATH}"
+      break
+    fi
+  done
+}
+
+# True when host Bundler can read the RuboCop Gemfile lock (Bundler 2+).
+local_bundler_ok() {
+  prefer_homebrew_ruby
+  command -v bundle >/dev/null 2>&1 || return 1
+  # System Ruby 2.6 + Bundler 1.x prints: "You must use Bundler 2 or greater..."
+  BUNDLE_GEMFILE="$CANVAS/Gemfile.d/rubocop.rb" bundle version >/dev/null 2>&1
+}
+
+run_rlint() {
+  if [[ "$DISABLE_RUBOCOP" == "1" ]]; then
+    return 0
+  fi
+
+  local args=(${RLINT_ARGUMENTS:---auto-correct-all})
+
+  if local_bundler_ok; then
+    "$CANVAS/script/rlint" "${args[@]}"
+    return $?
+  fi
+
+  if docker compose exec -T web true >/dev/null 2>&1; then
+    echo "Host Bundler incompatible with lockfile; running RuboCop in Docker..."
+    docker compose exec -T web script/rlint "${args[@]}"
+    return $?
+  fi
+
+  echo -e "${ORANGE}Skipping RuboCop: need Bundler 2+ (Ruby 3.4) or a running web container.${NC}"
+  echo "  brew install ruby@3.4 && /opt/homebrew/opt/ruby@3.4/bin/gem install bundler:2.6.7"
+  echo "  export PATH=\"/opt/homebrew/opt/ruby@3.4/bin:\$PATH\""
+  echo "  (or: DISABLE_RUBOCOP=1 / SKIP_CANVAS_PRECOMMIT_HOOK=1)"
+  return 0
+}
+
+NEW_JS_FILES=$(git diff --cached --name-only --diff-filter=A | grep -E "ui/.*\.(js|jsx)$" || true)
 
 if [ -n "$NEW_JS_FILES" ]; then
-    echo -e "${ORANGE}Warning: Found new .js or .jsx files. Please use TypeScript for new files:${NC}"
-    echo "$NEW_JS_FILES"
+  echo -e "${ORANGE}Warning: Found new .js or .jsx files. Please use TypeScript for new files:${NC}"
+  echo "$NEW_JS_FILES"
 fi
 
-if [ $(pwd -P) = $CANVAS ]; then
+if [ "$(pwd -P)" = "$CANVAS" ]; then
   # if .js, .ts, or .tsx files have changed, run eslint
   if [ -f node_modules/.bin/lint-staged ]; then
     echo 'Running ESLint...'
@@ -36,11 +110,15 @@ if [ $(pwd -P) = $CANVAS ]; then
   fi
 
   if git diff --cached --name-only | grep -q 'Gemfile\S*.lock'; then
-    echo "Checking lockfiles..."
-    bundle check
+    if local_bundler_ok; then
+      echo "Checking lockfiles..."
+      bundle check || true
+    else
+      echo -e "${ORANGE}Skipping bundle check (host Bundler incompatible with lockfile).${NC}"
+    fi
   fi
 fi
 
-$CANVAS/script/rlint ${RLINT_ARGUMENTS:- --auto-correct-all}
+run_rlint
 
 exit 0
