@@ -4,39 +4,49 @@
 # Run: bundle exec rake witbord:setup
 #      bundle exec rake witbord:seed_ghana
 
+module Witbord
+  module GhanaSeed
+    GHANA_REGIONS = [
+      "Ahafo Region",
+      "Ashanti Region",
+      "Bono East Region",
+      "Bono Region",
+      "Central Region",
+      "Eastern Region",
+      "Greater Accra Region",
+      "North East Region",
+      "Northern Region",
+      "Oti Region",
+      "Savannah Region",
+      "Upper East Region",
+      "Upper West Region",
+      "Volta Region",
+      "Western North Region",
+      "Western Region"
+    ].freeze
+
+    # name => vanity subdomain
+    PILOT_UNIVERSITIES = {
+      "KNUST" => "knust",
+      "University of Ghana" => "ug",
+      "University of Cape Coast" => "ucc",
+      "Ashesi University" => "ashesi",
+      "University of Education, Winneba" => "uew"
+    }.freeze
+
+    SECTOR_UNIVERSITIES = "Universities"
+    SECTOR_SHS = "Senior High Schools"
+    SECTOR_PRIVATE = "Private Schools"
+
+    module_function
+
+    def find_or_create_child!(parent, name)
+      parent.sub_accounts.find_by(name:) || parent.sub_accounts.create!(name:)
+    end
+  end
+end
+
 namespace :witbord do
-  GHANA_REGIONS = [
-    "Ahafo Region",
-    "Ashanti Region",
-    "Bono East Region",
-    "Bono Region",
-    "Central Region",
-    "Eastern Region",
-    "Greater Accra Region",
-    "North East Region",
-    "Northern Region",
-    "Oti Region",
-    "Savannah Region",
-    "Upper East Region",
-    "Upper West Region",
-    "Volta Region",
-    "Western North Region",
-    "Western Region"
-  ].freeze
-
-  # name => vanity subdomain
-  PILOT_UNIVERSITIES = {
-    "KNUST" => "knust",
-    "University of Ghana" => "ug",
-    "University of Cape Coast" => "ucc",
-    "Ashesi University" => "ashesi",
-    "University of Education, Winneba" => "uew"
-  }.freeze
-
-  SECTOR_UNIVERSITIES = "Universities"
-  SECTOR_SHS = "Senior High Schools"
-  SECTOR_PRIVATE = "Private Schools"
-
   desc "Configure Witbord branding, then seed the Ghana account tree"
   task setup: :environment do
     account = Account.default
@@ -95,9 +105,9 @@ namespace :witbord do
 
     puts "Seeding Ghana account tree under Witbord (id=#{root.id})..."
 
-    universities = find_or_create_child!(root, SECTOR_UNIVERSITIES)
-    shs = find_or_create_child!(root, SECTOR_SHS)
-    private_schools = find_or_create_child!(root, SECTOR_PRIVATE)
+    universities = Witbord::GhanaSeed.find_or_create_child!(root, Witbord::GhanaSeed::SECTOR_UNIVERSITIES)
+    shs = Witbord::GhanaSeed.find_or_create_child!(root, Witbord::GhanaSeed::SECTOR_SHS)
+    private_schools = Witbord::GhanaSeed.find_or_create_child!(root, Witbord::GhanaSeed::SECTOR_PRIVATE)
     puts "  Sector: #{universities.name} (id=#{universities.id})"
     puts "  Sector: #{shs.name} (id=#{shs.id})"
     puts "  Sector: #{private_schools.name} (id=#{private_schools.id})"
@@ -105,8 +115,8 @@ namespace :witbord do
     base = Witbord::VanityHost.base_domain || "witbord.com"
     puts ""
     puts "Pilot universities:"
-    PILOT_UNIVERSITIES.each do |name, subdomain|
-      school = find_or_create_child!(universities, name)
+    Witbord::GhanaSeed::PILOT_UNIVERSITIES.each do |name, subdomain|
+      school = Witbord::GhanaSeed.find_or_create_child!(universities, name)
       Witbord::VanityHost.assign!(school, subdomain)
       puts "  #{name} (id=#{school.id}) → https://#{subdomain}.#{base}/login"
     end
@@ -114,7 +124,7 @@ namespace :witbord do
     puts ""
     puts "SHS region folders (empty — add schools later with witbord:add_school):"
     created_regions = 0
-    GHANA_REGIONS.each do |region_name|
+    Witbord::GhanaSeed::GHANA_REGIONS.each do |region_name|
       region = shs.sub_accounts.find_by(name: region_name)
       if region
         puts "  exists: #{region_name} (id=#{region.id})"
@@ -126,20 +136,20 @@ namespace :witbord do
     end
 
     legacy = root.sub_accounts.active.select do |a|
-      GHANA_REGIONS.include?(a.name) && a.parent_account_id == root.id
+      Witbord::GhanaSeed::GHANA_REGIONS.include?(a.name) && a.parent_account_id == root.id
     end
     unless legacy.empty?
       puts ""
       puts "Note: legacy region folders still hang directly under the root (from early setup)."
-      puts "      They were not deleted. Prefer schools under '#{SECTOR_SHS}' / '#{SECTOR_UNIVERSITIES}'."
+      puts "      They were not deleted. Prefer schools under '#{Witbord::GhanaSeed::SECTOR_SHS}' / '#{Witbord::GhanaSeed::SECTOR_UNIVERSITIES}'."
       legacy.each { |a| puts "        - #{a.name} (id=#{a.id})" }
     end
 
     puts ""
     puts "seed_ghana complete."
-    puts "  Universities: #{PILOT_UNIVERSITIES.size} (vanity mapped)"
-    puts "  SHS regions:  #{GHANA_REGIONS.size} (#{created_regions} newly created)"
-    puts "  Private:      empty container '#{SECTOR_PRIVATE}'"
+    puts "  Universities: #{Witbord::GhanaSeed::PILOT_UNIVERSITIES.size} (vanity mapped)"
+    puts "  SHS regions:  #{Witbord::GhanaSeed::GHANA_REGIONS.size} (#{created_regions} newly created)"
+    puts "  Private:      empty container '#{Witbord::GhanaSeed::SECTOR_PRIVATE}'"
     puts "  Docs:         deploy/GHANA_ROLLOUT.md"
   end
 
@@ -155,18 +165,17 @@ namespace :witbord do
                raise "Parent not found: #{parent_name}" if candidates.empty?
 
                # Prefer folder under Senior High Schools / Universities if duplicates exist
-               found = candidates.find { |a| [SECTOR_SHS, SECTOR_UNIVERSITIES].include?(a.parent_account&.name) } ||
-                       candidates.first
-               found
+               sectors = [Witbord::GhanaSeed::SECTOR_SHS, Witbord::GhanaSeed::SECTOR_UNIVERSITIES]
+               candidates.find { |a| sectors.include?(a.parent_account&.name) } || candidates.first
              else
                root
              end
 
-    school = parent.sub_accounts.find_by(name: name)
+    school = parent.sub_accounts.find_by(name:)
     if school
       puts "School already exists: #{school.name} (id=#{school.id})"
     else
-      school = parent.sub_accounts.create!(name: name)
+      school = parent.sub_accounts.create!(name:)
       puts "Created school: #{school.name} (id=#{school.id}) under #{parent.name}"
     end
     puts "Admins API: /api/v1/accounts/#{school.id}/admins"
@@ -209,9 +218,4 @@ namespace :witbord do
       puts rows.sort
     end
   end
-end
-
-# Helper for witbord rake tasks (loaded with this file)
-def find_or_create_child!(parent, name)
-  parent.sub_accounts.find_by(name: name) || parent.sub_accounts.create!(name: name)
 end
