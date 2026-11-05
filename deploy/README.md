@@ -45,7 +45,7 @@ git clone git@github-nyansa:nyansa-tech/witbord-lms.git /opt/witbord-lms
 cd /opt/witbord-lms
 
 cp deploy/.env.example deploy/.env
-nano deploy/.env   # ENCRYPTION_KEY, POSTGRES_PASSWORD, AWS_S3_BUCKET, admin password
+nano deploy/.env   # ENCRYPTION_KEY, JWT_ENCRYPTION_KEY (64 hex chars), POSTGRES_PASSWORD, admin password
 # Leave AWS access keys empty — use the instance IAM role
 
 mkdir -p deploy/certs
@@ -78,4 +78,5 @@ aws ec2 stop-instances --instance-ids "$(terraform output -raw instance_id)" --r
 - Prefer the **IAM instance role** for S3; do not put long-lived keys in `.env` unless required.
 - Pilot RAM is **16 GB** + swap; asset builds run **sequentially** with `NODE_OPTIONS=--max-old-space-size=4096`.
 - Never reuse the local Docker `ENCRYPTION_KEY` in production.
+- `JWT_ENCRYPTION_KEY` must be **exactly 64 characters** (`openssl rand -hex 32`). Post-login 500s with `jwt encryption key must be 64 characters` mean this is missing or wrong length — do **not** change `ENCRYPTION_KEY` to fix it (that would break already-encrypted DB fields).
 - After boot, `rake witbord:setup` brands the root account (invoked by `first_boot.sh`).

@@ -74,32 +74,17 @@ echo "    waiting for postgres..."
 sleep 15
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d
 
-echo "==> Database migrate"
-docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm \
-  -e RAILS_ENV=production \
-  web bundle exec rake db:create db:migrate || true
-
-echo "==> Admin user"
+echo "==> Database create / migrate / initial data"
+# migrate alone is not enough — Account.default / site_admin come from load_initial_data
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm \
   -e RAILS_ENV=production \
   -e CANVAS_LMS_ADMIN_EMAIL \
   -e CANVAS_LMS_ADMIN_PASSWORD \
   -e CANVAS_LMS_STATS_COLLECTION="${CANVAS_LMS_STATS_COLLECTION:-opt_out}" \
-  web bundle exec rake db:configure_admin
+  web bundle exec rake db:create db:migrate db:load_initial_data
 
-# Sequential asset steps — never run CSS and webpack in parallel on 16 GB
-echo "==> Compile CSS assets (step 1/2, low-memory)"
-docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm \
-  -e RAILS_ENV=production \
-  -e NODE_OPTIONS \
-  web yarn run build:css || true
-
-echo "==> Compile JS / webpack production (step 2/2, low-memory)"
-echo "    If this OOMs, stop other containers briefly or temporarily upsize to t3.2xlarge — see deploy/COST.md"
-docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm \
-  -e RAILS_ENV=production \
-  -e NODE_OPTIONS \
-  web yarn run webpack-production || true
+# Assets are compiled inside Dockerfile.production (canvas:compile_assets).
+# Do not re-run yarn here — the prod image has no node_modules.
 
 echo "==> Witbord branding"
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm \

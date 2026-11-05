@@ -25,6 +25,8 @@ services:
     environment: &WEB_ENV
       RAILS_ENV: production
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      # Exactly 64 chars (openssl rand -hex 32). Separate from ENCRYPTION_KEY.
+      JWT_ENCRYPTION_KEY: ${JWT_ENCRYPTION_KEY}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       CANVAS_DATABASE_HOST: postgres
       CANVAS_DATABASE_USERNAME: postgres
@@ -34,9 +36,9 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_REGION: ${AWS_REGION:-af-south-1}
     volumes:
+      # Do NOT mount public/dist or brandable_css_brands — empty named volumes
+      # would hide assets compiled into the production image.
       - ../config:/usr/src/app/config
-      - brandable_css_brands:/usr/src/app/app/stylesheets/brandable_css_brands
-      - public_dist:/usr/src/app/public/dist
       - log:/usr/src/app/log
       - tmp:/usr/src/app/tmp
       - canvas_files:/usr/src/app/tmp/files
@@ -98,8 +100,6 @@ services:
 volumes:
   pg_data:
   redis_data:
-  brandable_css_brands:
-  public_dist:
   log:
   tmp:
   canvas_files:
