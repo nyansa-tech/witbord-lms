@@ -128,6 +128,14 @@ echo "==> db:migrate"
 echo "==> Recreate web + jobs"
 "${COMPOSE[@]}" up -d --force-recreate web jobs
 
+# Custom theme CSS/JS live under public/dist/brandable_css/<md5>/ inside the
+# container. Recreating/rebuilding the image drops them while the DB still
+# points at that md5 → 404 + "MIME type text/html" for stylesheets.
+# Must exec into the running web container (run --rm would write then discard).
+echo "==> Regenerating brandable CSS/JS on running web"
+"${COMPOSE[@]}" exec -T -e RAILS_ENV=production web \
+  bundle exec rails runner 'bc = Account.default&.brand_config; raise "no brand_config" unless bc; bc.save_all_files!; puts "brand_config #{bc.md5} files written"'
+
 echo "==> Restart nginx (refresh upstream IP after web recreate)"
 "${COMPOSE[@]}" restart nginx
 

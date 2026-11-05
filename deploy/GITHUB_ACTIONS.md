@@ -55,7 +55,9 @@ git pull --ff-only origin main
 1. `git pull --ff-only origin main` in `/opt/witbord-lms`
 2. Re-applies `deploy/config/*.yml.template` → `config/` (does **not** touch `.env` / certs)
 3. Rebuilds the Docker image only if Dockerfile / lockfiles / `deploy/docker-compose.prod.yml` changed (or `WITBORD_FORCE_REBUILD=1`)
-4. `db:migrate`, recreate `web` + `jobs`, restart `nginx`
+4. `db:migrate`, recreate `web` + `jobs`
+5. Regenerate account brandable CSS/JS inside the running `web` container (lost on recreate)
+6. Restart `nginx`
 
 Manual re-run: Actions → **Deploy production** → **Run workflow**, or on the box:
 
