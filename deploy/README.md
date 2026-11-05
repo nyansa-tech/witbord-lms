@@ -16,6 +16,7 @@
 | [`COST.md`](COST.md) | Bill expectations |
 | [`CLOUDFLARE.md`](CLOUDFLARE.md) | DNS + SSL for `witbord.com` |
 | [`VANITY_DOMAINS.md`](VANITY_DOMAINS.md) | School hosts like `knust.witbord.com` |
+| [`GHANA_ROLLOUT.md`](GHANA_ROLLOUT.md) | Universities pilot + SHS/private account tree |
 | [`SMOKE.md`](SMOKE.md) | Post-go-live verification |
 
 ## End-to-end (laptop → live)
@@ -87,3 +88,4 @@ aws ec2 stop-instances --instance-ids "$(terraform output -raw instance_id)" --r
 - `JWT_ENCRYPTION_KEY` must be **exactly 64 characters** (`openssl rand -hex 32`). Post-login 500s with `jwt encryption key must be 64 characters` mean this is missing or wrong length — do **not** change `ENCRYPTION_KEY` to fix it (that would break already-encrypted DB fields).
 - After boot, `rake witbord:setup` brands the root account (invoked by `first_boot.sh`).
 - Push to `main` deploys via the self-hosted runner once registered ([GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)).
+- Ghana school tree (universities pilot): [GHANA_ROLLOUT.md](GHANA_ROLLOUT.md) — `rake witbord:seed_ghana`.
