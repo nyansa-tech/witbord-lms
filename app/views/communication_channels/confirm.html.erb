@@ -25,7 +25,7 @@
 
 <div id="modal-box" class="ic-Login-confirmation">
   <header class="ic-Login-confirmation__header">
-    <%= image_tag("login/canvas-logo@2x.png", class:"ic-Login-confirmation__logo", alt:"Witbord by Nyansa Technologies") %>
+    <%= image_tag(brand_variable("ic-brand-Login-logo"), class:"ic-Login-confirmation__logo", alt: alt_text_for_login_logo) %>
   </header>
   <div class="ic-Login-confirmation__content">
   <h2 class="ic-Login-confirmation__headline"><%= t 'titles.welcome_aboard', "Welcome Aboard!" %></h2>
@@ -182,7 +182,7 @@ Which is you?", :count => @merge_opportunities.length %>
         <div class="controls">
           <label for="user_subscribe_to_emails" class="checkbox">
             <%= check_box :user, :subscribe_to_emails, :checked => true %>
-            <%= t "labels.subscribe_to_emails", "I want to receive information, news and tips from Instructure" %>
+            <%= t "labels.subscribe_to_emails", "I want to receive information, news and tips from Witbord" %>
           </label>
         </div>
       </div>

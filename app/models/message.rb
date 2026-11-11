@@ -947,6 +947,11 @@ self.user,
     context_root_account && context_root_account.settings[:email_logo]
   end
 
+  # Brand name for notification copy (Witbord). Available in message ERB like custom_logo.
+  def product_name
+    context_root_account&.product_name.presence || Account.default.product_name
+  end
+
   # Internal: Set default values before save.
   #
   # Returns true.

@@ -32,16 +32,24 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm
 
 ## 5. Email (SES)
 
+On the EC2 host, check whether Canvas queued/sent mail:
+
 ```bash
-# From Rails console in web container
-docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env run --rm \
-  -e RAILS_ENV=production \
-  web bundle exec rails runner 'Message.create!(...)' 
+cd /opt/witbord-lms
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env exec -T \
+  -e RAILS_ENV=production web bundle exec rails runner '
+email = "harounsiddique+teacher@gmail.com"
+Message.where(to: email).order(id: :desc).limit(10).each { |m|
+  puts [m.id, m.workflow_state, m.subject, m.transmission_errors].inspect
+}
+puts "smtp=#{ActionMailer::Base.smtp_settings.slice(:address, :user_name)}"
+'
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env logs jobs --tail 100
 ```
 
-Or trigger “Forgot password” for a verified recipient (sandbox) / any recipient (production SES).
+Also check SES console (SMTP region) → Account dashboard → Sending statistics.
 
-Check SES → Sending statistics for bounces.
+Sandbox: recipient addresses must be verified identities. Trigger “Forgot password” or re-invite after SMTP works.
 
 ## 6. Jobs
 

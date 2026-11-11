@@ -2,8 +2,9 @@
   <%= registration_confirmation_url(asset.user.communication_channel.confirmation_code) %>
 <% end %>
 
+<% product_name = asset.account.root_account.product_name %>
 <% define_content :subject do %>
-  <%= t :subject, "Canvas Account Admin Invitation" %>
+  <%= t :subject, "%{product_name} Account Admin Invitation", product_name: product_name %>
 <% end %>
 
 <a href="<%= content(:link) %>">
@@ -36,5 +37,5 @@
   <% end %>
 </table>
 
-<p><%= t(:url_info_label, "You'll need to register with Canvas before you can participate as an account admin.") %></p>
+<p><%= t(:url_info_label, "You'll need to register with %{product_name} before you can participate as an account admin.", product_name: product_name) %></p>
 

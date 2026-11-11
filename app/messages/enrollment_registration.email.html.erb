@@ -30,7 +30,7 @@
     <% end %>
 </table>
 
-<p><%= t :details, "You'll need to register with Canvas before you can participate in the class." %></p>
+<p><%= t :details, "You'll need to register with %{product_name} before you can participate in the class.", product_name: asset.course.root_account.product_name %></p>
 
 <br><br>
 

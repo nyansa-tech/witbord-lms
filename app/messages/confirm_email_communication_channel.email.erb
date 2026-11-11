@@ -3,11 +3,11 @@
 <% end %>
 
 <% define_content :subject do %>
-  <%= t :subject, "Confirm Email: Canvas" %>
+  <%= t :subject, "Confirm Email: Witbord" %>
 <% end %>
 
 <%= t :body, <<-BODY, :email => asset.path, :website => data.from_host || HostUrl.default_host
-The email address: %{email} is being added to a Canvas account registered at %{website}.
+The email address: %{email} is being added to a Witbord account registered at %{website}.
 
 To prevent this address from being registered, please disregard this email.
 BODY

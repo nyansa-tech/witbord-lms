@@ -3,7 +3,7 @@
 <% end %>
 
 <% define_content :subject do %>
-  <%= t :subject, "Confirm Email: Canvas" %>
+  <%= t :subject, "Confirm Email: Witbord" %>
 <% end %>
 
 <% define_content :footer_link do %>
@@ -14,7 +14,7 @@
 
 <p>
 <%= t :body,
-      "The email address: %{email} is being added to a Canvas account registered at %{website}.",
+      "The email address: %{email} is being added to a Witbord account registered at %{website}.",
       :email => asset.path,
       :website => data.from_host || HostUrl.default_host %>
 </p>

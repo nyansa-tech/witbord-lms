@@ -1,13 +1,14 @@
 <% p = asset.is_a?(Pseudonym) ? asset : asset.pseudonym %>
+<% product_name = p.account.root_account.product_name %>
 <% define_content :link do %>
   <%= profile_url %>
 <% end %>
 
 <% define_content :subject do %>
-  <%= t :subject, "Canvas Registration Complete" %>
+  <%= t :subject, "%{product_name} Registration Complete", product_name: product_name %>
 <% end %>
 
-<p><%= t :body, "You have been registered for a Canvas account at %{account}!", :account => p.account.display_name %></p>
+<p><%= t :body, "You have been registered for a %{product_name} account at %{account}!", :account => p.account.display_name, :product_name => product_name %></p>
 
 <a href="<%= content(:link) %>">
   <%= t :link, "Click here to access your account" %>

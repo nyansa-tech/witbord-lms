@@ -120,7 +120,9 @@ Leave `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` empty in `deploy/.env` when 
 - [ ] Create SMTP credentials → `deploy/.env`
 - [ ] From: `notifications@witbord.com`
 
-SMTP host for Cape Town: `email-smtp.af-south-1.amazonaws.com` (if SES is unavailable in-region, use `eu-west-1` SMTP and document it in `.env`).
+Cape Town (`af-south-1`) has the SES **API** but **no** `email-smtp.af-south-1.amazonaws.com` endpoint.
+Use SMTP in **eu-west-1** (verify `witbord.com` + create SMTP credentials there):
+`SES_SMTP_ADDRESS=email-smtp.eu-west-1.amazonaws.com`.
 
 ## 6. Backups
 
